@@ -200,8 +200,9 @@ export function useLivePrices(): UseLivePricesResult {
         }
         allOpenPositions.push(...directPositions);
 
-        let totalCurrentValue = 0;
+        let totalPositionEquity = 0;
         let totalCostBasis = 0;
+        let totalUnrealizedPL = 0;
         let matched = 0;
         let unmatched = 0;
 
@@ -214,18 +215,24 @@ export function useLivePrices(): UseLivePricesResult {
               : (rate.ask ?? rate.Ask ?? 0);
 
             if (currentPrice > 0) {
-              totalCurrentValue += pos.units * currentPrice;
+              // Position equity = margin (amount) + unrealized P/L
+              // This correctly handles leveraged positions where units * price
+              // is the full leveraged exposure, not the copier's actual equity.
+              // For non-leveraged: amount = units * openRate, so this equals units * currentPrice.
+              // For leveraged: amount < units * openRate, so this gives the correct smaller equity.
+              const direction = pos.isBuy ? 1 : -1;
+              const unrealizedPL = direction * pos.units * (currentPrice - (pos.openRate ?? 0));
+              const posEquity = (pos.amount ?? 0) + unrealizedPL;
+
+              totalPositionEquity += posEquity;
+              totalCostBasis += pos.amount ?? 0;
+              totalUnrealizedPL += unrealizedPL;
               matched++;
             } else {
               unmatched++;
             }
           } else {
             unmatched++;
-          }
-
-          // Cost basis: use amount field (copier's invested $)
-          if (pos.amount > 0) {
-            totalCostBasis += pos.amount;
           }
         }
 
@@ -237,28 +244,32 @@ export function useLivePrices(): UseLivePricesResult {
           const currentPrice = rate
             ? (pos.isBuy ? (rate.bid ?? rate.Bid ?? 0) : (rate.ask ?? rate.Ask ?? 0))
             : 0;
+          const direction = pos.isBuy ? 1 : -1;
+          const upl = direction * pos.units * (currentPrice - (pos.openRate ?? 0));
+          const equity = (pos.amount ?? 0) + upl;
           console.log(`[eToro API] Position ${logged + 1}:`, {
             instrumentID: pos.instrumentID,
             units: pos.units,
             openRate: pos.openRate,
             amount: pos.amount,
+            leverage: pos.openRate > 0 ? ((pos.units * pos.openRate) / pos.amount).toFixed(1) + "x" : "N/A",
             currentPrice,
-            currentValue: currentPrice > 0 ? (pos.units * currentPrice).toFixed(2) : "N/A",
+            unrealizedPL: upl.toFixed(2),
+            equity: equity.toFixed(2),
             mirrorID: pos.mirrorID,
           });
           logged++;
         }
 
-        const unrealizedPL = totalCurrentValue - totalCostBasis;
-        netEquity = totalAvailable + totalCurrentValue;
+        netEquity = totalAvailable + totalPositionEquity;
 
         console.log("[eToro API] Rates computation:", {
           totalPositions: allOpenPositions.length,
           matched,
           unmatched,
           totalCostBasis: totalCostBasis.toFixed(2),
-          totalCurrentValue: totalCurrentValue.toFixed(2),
-          unrealizedPL: unrealizedPL.toFixed(2),
+          totalPositionEquity: totalPositionEquity.toFixed(2),
+          totalUnrealizedPL: totalUnrealizedPL.toFixed(2),
           totalAvailable: totalAvailable.toFixed(2),
           netEquity: netEquity.toFixed(2),
         });
