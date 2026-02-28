@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { useFinanceStore } from "./store";
-import { resolveTickerFromName } from "./ticker-map";
 
 interface LivePrice {
   symbol: string;
@@ -13,9 +11,23 @@ interface LivePrice {
   name: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export interface EtoroPortfolio {
+  raw: Record<string, unknown>;
+  // Parsed fields - we'll populate what the API gives us
+  credit?: number;
+  netEquity?: number;
+  totalPL?: number;
+  totalPLPercent?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  positions?: any[];
+}
+
 interface UseLivePricesResult {
   // instrument name → live price data
   prices: Record<string, LivePrice>;
+  // Full eToro portfolio data (if available)
+  etoroPortfolio: EtoroPortfolio | null;
   // instrument names we couldn't resolve to tickers
   unmapped: string[];
   // loading state
@@ -24,33 +36,30 @@ interface UseLivePricesResult {
   lastUpdated: Date | null;
   // trigger a refresh
   fetchPrices: (instrumentNames: string[]) => Promise<void>;
+  // fetch full portfolio from eToro API
+  fetchPortfolio: () => Promise<void>;
 }
 
-const CACHE_KEY = "live-prices-cache";
-const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
+const CACHE_KEY = "etoro-portfolio-cache";
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-interface PriceCache {
-  prices: Record<string, LivePrice>;
-  timestamp: number;
-}
-
-function getCachedPrices(): PriceCache | null {
+function getCachedPortfolio(): EtoroPortfolio | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return null;
-    const cache: PriceCache = JSON.parse(raw);
-    if (Date.now() - cache.timestamp > CACHE_TTL) return null;
-    return cache;
+    const cached = JSON.parse(raw);
+    if (Date.now() - cached.timestamp > CACHE_TTL) return null;
+    return cached.data;
   } catch {
     return null;
   }
 }
 
-function setCachedPrices(prices: Record<string, LivePrice>) {
+function setCachedPortfolio(data: EtoroPortfolio) {
   try {
     localStorage.setItem(
       CACHE_KEY,
-      JSON.stringify({ prices, timestamp: Date.now() })
+      JSON.stringify({ data, timestamp: Date.now() })
     );
   } catch {
     // localStorage full or unavailable
@@ -59,12 +68,56 @@ function setCachedPrices(prices: Record<string, LivePrice>) {
 
 export function useLivePrices(): UseLivePricesResult {
   const [prices, setPrices] = useState<Record<string, LivePrice>>({});
+  const [etoroPortfolio, setEtoroPortfolio] = useState<EtoroPortfolio | null>(null);
   const [unmapped, setUnmapped] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const { tickerMappings, setTickerMappings } = useFinanceStore();
 
+  // Fetch full portfolio directly from eToro API
+  const fetchPortfolio = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      // Check cache first
+      const cached = getCachedPortfolio();
+      if (cached) {
+        setEtoroPortfolio(cached);
+        setLastUpdated(new Date());
+        setLoading(false);
+        return;
+      }
+
+      const res = await fetch("/api/prices?action=portfolio");
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+
+      const portfolio: EtoroPortfolio = {
+        raw: data,
+        credit: data.credit ?? data.availableBalance ?? data.cash,
+        netEquity: data.netEquity ?? data.equity ?? data.totalValue,
+        totalPL: data.totalPL ?? data.pnl ?? data.profit,
+        totalPLPercent: data.totalPLPercent ?? data.pnlPercent,
+        positions: data.positions ?? data.openPositions ?? data.trades,
+      };
+
+      setCachedPortfolio(portfolio);
+      setEtoroPortfolio(portfolio);
+      setLastUpdated(new Date());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to fetch portfolio");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Fetch market rates for specific instruments (fallback if portfolio doesn't include prices)
   const fetchPrices = useCallback(
     async (instrumentNames: string[]) => {
       if (instrumentNames.length === 0) return;
@@ -73,143 +126,52 @@ export function useLivePrices(): UseLivePricesResult {
       setError(null);
 
       try {
-        // Deduplicate instrument names
-        const uniqueNames = [...new Set(instrumentNames)];
+        // Send instrument names directly to eToro search/rates
+        const res = await fetch("/api/prices", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symbols: instrumentNames }),
+        });
 
-        // Resolve instrument names to ticker symbols
-        const resolvedMappings: Record<string, string> = {};
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+
+        if (data.error) throw new Error(data.error);
+
+        // Map instrument names to their price data
+        const instrumentPrices: Record<string, LivePrice> = {};
         const unresolvedNames: string[] = [];
 
-        for (const name of uniqueNames) {
-          // Check user's saved mappings first
-          const savedTicker = tickerMappings[name];
-          if (savedTicker) {
-            resolvedMappings[name] = savedTicker;
-            continue;
+        if (data.prices) {
+          for (const [key, val] of Object.entries(data.prices)) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const item = val as any;
+            if (item && item.price > 0) {
+              instrumentPrices[key] = {
+                symbol: key,
+                price: item.price,
+                change: item.change || 0,
+                changePercent: item.changePercent || 0,
+                currency: item.currency || "USD",
+                name: item.name || key,
+              };
+            }
           }
+        }
 
-          // Try automatic resolution
-          const ticker = resolveTickerFromName(name);
-          if (ticker) {
-            resolvedMappings[name] = ticker;
-          } else {
+        // Track unresolved
+        for (const name of instrumentNames) {
+          if (!instrumentPrices[name]) {
             unresolvedNames.push(name);
           }
         }
 
-        // Try to auto-resolve unmapped names via Yahoo Finance search
-        for (const name of unresolvedNames) {
-          try {
-            const res = await fetch(
-              `/api/prices?q=${encodeURIComponent(name)}`
-            );
-            if (res.ok) {
-              const data = await res.json();
-              const results = data.results || [];
-              // Pick the first stock/ETF/crypto result
-              const match = results.find(
-                (r: { type: string }) =>
-                  r.type === "EQUITY" ||
-                  r.type === "ETF" ||
-                  r.type === "CRYPTOCURRENCY"
-              );
-              if (match?.symbol) {
-                resolvedMappings[name] = match.symbol;
-                // Remove from unresolved
-                const idx = unresolvedNames.indexOf(name);
-                if (idx >= 0) unresolvedNames.splice(idx, 1);
-              }
-            }
-          } catch {
-            // Search failed, leave as unmapped
-          }
-        }
-
-        // Save all resolved mappings for future use
-        if (Object.keys(resolvedMappings).length > 0) {
-          setTickerMappings(resolvedMappings);
-        }
-
-        setUnmapped(unresolvedNames);
-
-        // Get the unique symbols to fetch
-        const symbols = [...new Set(Object.values(resolvedMappings))];
-
-        if (symbols.length === 0) {
-          setLoading(false);
-          return;
-        }
-
-        // Check cache first
-        const cache = getCachedPrices();
-        const cachedSymbols = cache ? Object.keys(cache.prices) : [];
-        const missingSymbols = symbols.filter(
-          (s) => !cachedSymbols.includes(s)
-        );
-
-        let allPriceData: Record<
-          string,
-          { price: number; change: number; changePercent: number; currency: string; name: string }
-        > = cache?.prices
-          ? Object.fromEntries(
-              Object.entries(cache.prices).map(([k, v]) => [k, v])
-            )
-          : {};
-
-        // Fetch missing prices from API
-        if (missingSymbols.length > 0 || !cache) {
-          const symbolsToFetch = cache ? missingSymbols : symbols;
-          if (symbolsToFetch.length > 0) {
-            const res = await fetch("/api/prices", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ symbols: symbolsToFetch }),
-            });
-
-            if (!res.ok) {
-              throw new Error(`Failed to fetch prices: ${res.status}`);
-            }
-
-            const data = await res.json();
-            if (data.error) throw new Error(data.error);
-
-            allPriceData = { ...allPriceData, ...data.prices };
-          }
-        }
-
-        // Map instrument names to their price data
-        const instrumentPrices: Record<string, LivePrice> = {};
-        for (const [name, symbol] of Object.entries(resolvedMappings)) {
-          const priceData = allPriceData[symbol];
-          if (priceData && priceData.price > 0) {
-            instrumentPrices[name] = {
-              symbol,
-              price: priceData.price,
-              change: priceData.change,
-              changePercent: priceData.changePercent,
-              currency: priceData.currency,
-              name: priceData.name,
-            };
-          }
-        }
-
-        // Cache all fetched prices
-        const cachePrices: Record<string, LivePrice> = {};
-        for (const [symbol, data] of Object.entries(allPriceData)) {
-          if (data && data.price > 0) {
-            cachePrices[symbol] = {
-              symbol,
-              price: data.price,
-              change: data.change,
-              changePercent: data.changePercent,
-              currency: data.currency,
-              name: data.name,
-            };
-          }
-        }
-        setCachedPrices(cachePrices);
-
         setPrices(instrumentPrices);
+        setUnmapped(unresolvedNames);
         setLastUpdated(new Date());
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to fetch prices");
@@ -217,8 +179,17 @@ export function useLivePrices(): UseLivePricesResult {
         setLoading(false);
       }
     },
-    [tickerMappings, setTickerMappings]
+    []
   );
 
-  return { prices, unmapped, loading, error, lastUpdated, fetchPrices };
+  return {
+    prices,
+    etoroPortfolio,
+    unmapped,
+    loading,
+    error,
+    lastUpdated,
+    fetchPrices,
+    fetchPortfolio,
+  };
 }

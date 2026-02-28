@@ -38,8 +38,8 @@ export default function InvestmentsPage() {
 
   const hasData = etoroPositions.length > 0 || etoroTransactions.length > 0 || etoroDividends.length > 0;
 
-  // Live prices from Yahoo Finance
-  const { prices: livePrices, unmapped, loading: pricesLoading, error: pricesError, lastUpdated, fetchPrices } = useLivePrices();
+  // Live data from eToro API
+  const { prices: livePrices, etoroPortfolio, unmapped, loading: pricesLoading, error: pricesError, lastUpdated, fetchPrices, fetchPortfolio } = useLivePrices();
 
   // Filter positions by status
   const filteredPositions = useMemo(() => {
@@ -140,19 +140,18 @@ export default function InvestmentsPage() {
   );
 
   const handleRefreshPrices = useCallback(() => {
-    if (derivedInstrumentNames.length > 0) {
-      fetchPrices(derivedInstrumentNames);
-    }
-  }, [derivedInstrumentNames, fetchPrices]);
+    // Try eToro portfolio API first, fall back to market rates
+    fetchPortfolio();
+  }, [fetchPortfolio]);
 
-  // Fetch on first load
+  // Fetch portfolio on first load
   const [hasFetchedOnce, setHasFetchedOnce] = useState(false);
   useEffect(() => {
-    if (!hasFetchedOnce && derivedInstrumentNames.length > 0) {
+    if (!hasFetchedOnce && hasData) {
       setHasFetchedOnce(true);
-      fetchPrices(derivedInstrumentNames);
+      fetchPortfolio();
     }
-  }, [hasFetchedOnce, derivedInstrumentNames, fetchPrices]);
+  }, [hasFetchedOnce, hasData, fetchPortfolio]);
 
   // Use CSV open positions if available, otherwise use derived ones
   const hasOpenFromCSV = openPositionsFromCSV.length > 0;
@@ -221,15 +220,14 @@ export default function InvestmentsPage() {
       unrealizedPL = 0;
     }
 
-    // Estimated portfolio value = net deposits + realized P/L + dividends + unrealized P/L
-    // This equals: cash balance + open positions value (matching eToro's "Cash and Holdings")
-    const estimatedValue = netInvested + realizedPL + totalDividends + unrealizedPL;
+    // Use eToro API data if available (exact values), otherwise estimate
+    const apiEquity = etoroPortfolio?.netEquity;
+    const apiPL = etoroPortfolio?.totalPL;
 
-    // Total P/L = realized + unrealized + dividends
-    const totalPL = realizedPL + unrealizedPL + totalDividends;
-
-    // P/L % based on net invested (how eToro calculates it)
+    const estimatedValue = apiEquity ?? (netInvested + realizedPL + totalDividends + unrealizedPL);
+    const totalPL = apiPL ?? (realizedPL + unrealizedPL + totalDividends);
     const plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
+    const hasApiData = apiEquity !== undefined;
 
     // Estimated cash = portfolio value - open positions value
     const estimatedCash = estimatedValue - openValue;
@@ -249,8 +247,9 @@ export default function InvestmentsPage() {
       hasOpenPositions: openPositionCount > 0,
       hasOpenFromCSV,
       hasTransactions: etoroTransactions.length > 0,
+      hasApiData,
     };
-  }, [etoroPositions, etoroTransactions, etoroDividends, openPositionsFromCSV, hasOpenFromCSV, openPositionsCostBasis, openPositionCount]);
+  }, [etoroPositions, etoroTransactions, etoroDividends, openPositionsFromCSV, hasOpenFromCSV, openPositionsCostBasis, openPositionCount, etoroPortfolio]);
 
   const stats = useMemo(() => {
     // P/L and win/loss from the filtered set (respects all/open/closed filter)
@@ -378,13 +377,15 @@ export default function InvestmentsPage() {
           label="Portfolio Value"
           value={formatCurrency(portfolio.estimatedValue, "USD")}
           subtitle={
-            portfolio.hasOpenFromCSV
-              ? `${openPositionCount} open positions`
-              : portfolio.hasOpenPositions
-                ? `${openPositionCount} open (at cost basis)`
-                : portfolio.hasTransactions
-                  ? "From transactions"
-                  : "Upload transactions for accuracy"
+            portfolio.hasApiData
+              ? "Live from eToro API"
+              : portfolio.hasOpenFromCSV
+                ? `${openPositionCount} open positions`
+                : portfolio.hasOpenPositions
+                  ? `${openPositionCount} open (at cost basis)`
+                  : portfolio.hasTransactions
+                    ? "From transactions"
+                    : "Upload transactions for accuracy"
           }
         />
         <StatCard
@@ -433,7 +434,7 @@ export default function InvestmentsPage() {
           )}
           {lastUpdated && (
             <p className="text-xs text-[var(--muted)] mb-3">
-              Live prices from Yahoo Finance. Updated {lastUpdated.toLocaleTimeString()}.
+              Live data from eToro API. Updated {lastUpdated.toLocaleTimeString()}.
               {livePriceData.priceCount > 0 && ` Matched ${livePriceData.priceCount}/${derivedInstrumentNames.length} instruments.`}
               {unmapped.length > 0 && ` ${unmapped.length} unresolved.`}
             </p>

@@ -1,17 +1,102 @@
 import { NextRequest, NextResponse } from "next/server";
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const yahooFinance = require("yahoo-finance2").default || require("yahoo-finance2") as any;
+import { randomUUID } from "crypto";
 
-interface PriceData {
-  price: number;
-  change: number;
-  changePercent: number;
-  currency: string;
-  name: string;
+const ETORO_BASE_URL = "https://public-api.etoro.com/api/v1";
+
+function getEtoroHeaders(): Record<string, string> {
+  const apiKey = process.env.ETORO_API_KEY;
+  const userKey = process.env.ETORO_USER_KEY;
+
+  if (!apiKey) throw new Error("ETORO_API_KEY not set in environment");
+
+  const headers: Record<string, string> = {
+    "x-request-id": randomUUID(),
+    "x-api-key": apiKey,
+    "Content-Type": "application/json",
+  };
+
+  // User key is optional - some endpoints may work with just the API key
+  if (userKey && userKey !== "PASTE_YOUR_GENERATED_USER_KEY_HERE") {
+    headers["x-user-key"] = userKey;
+  }
+
+  return headers;
 }
 
-// POST /api/prices - fetch prices for multiple symbols in one batch
-// Body: { symbols: ["AAPL", "TSLA", "BTC-USD"] }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function etoroFetch(path: string): Promise<any> {
+  const res = await fetch(`${ETORO_BASE_URL}${path}`, {
+    headers: getEtoroHeaders(),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`eToro API ${res.status}: ${text || res.statusText}`);
+  }
+
+  return res.json();
+}
+
+// GET /api/prices?action=portfolio - fetch full portfolio from eToro
+// GET /api/prices?action=rates&instruments=AAPL,TSLA - fetch market rates
+// GET /api/prices?action=search&q=Apple - search instruments
+export async function GET(req: NextRequest) {
+  const action = req.nextUrl.searchParams.get("action") || "portfolio";
+
+  try {
+    if (action === "portfolio") {
+      // Fetch real portfolio - positions, balance, P/L
+      const data = await etoroFetch("/real/portfolio");
+      return NextResponse.json(data, {
+        headers: {
+          "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60",
+        },
+      });
+    }
+
+    if (action === "rates") {
+      // Fetch market rates for instruments
+      const instruments = req.nextUrl.searchParams.get("instruments") || "";
+      const path = instruments
+        ? `/market-data/rates?instruments=${encodeURIComponent(instruments)}`
+        : "/market-data/rates";
+      const data = await etoroFetch(path);
+      return NextResponse.json(data);
+    }
+
+    if (action === "search") {
+      const q = req.nextUrl.searchParams.get("q") || "";
+      if (!q) return NextResponse.json({ results: [] });
+      const data = await etoroFetch(
+        `/market-data/instruments/search?query=${encodeURIComponent(q)}`
+      );
+      return NextResponse.json(data);
+    }
+
+    if (action === "metadata") {
+      const data = await etoroFetch("/market-data/instruments/metadata");
+      return NextResponse.json(data);
+    }
+
+    if (action === "history") {
+      const data = await etoroFetch("/real/trading-history");
+      return NextResponse.json(data);
+    }
+
+    return NextResponse.json({ error: "Unknown action" }, { status: 400 });
+  } catch (e) {
+    console.error("eToro API error:", e);
+
+    const message = e instanceof Error ? e.message : "Unknown error";
+    const status = message.includes("not set") ? 503 : 500;
+
+    return NextResponse.json({ error: message }, { status });
+  }
+}
+
+// Keep POST for backward compatibility (live price hook uses it)
+// Now proxies through eToro market-data/rates
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -21,76 +106,48 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ prices: {} });
     }
 
-    // Limit to 100 symbols per request, deduplicate
-    const limited = [...new Set(symbols)].slice(0, 100);
+    // Try eToro rates endpoint
+    const data = await etoroFetch(
+      `/market-data/rates?instruments=${encodeURIComponent(symbols.join(","))}`
+    );
 
-    const prices: Record<string, PriceData> = {};
-
-    // Fetch in parallel batches of 10
-    for (let i = 0; i < limited.length; i += 10) {
-      const batch = limited.slice(i, i + 10);
-      const results = await Promise.allSettled(
-        batch.map(async (symbol) => {
-          // Single symbol quote returns a Quote object
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const q: any = await yahooFinance.quote(symbol);
-          return { symbol, q };
-        })
-      );
-
-      for (const result of results) {
-        if (result.status === "fulfilled") {
-          const { symbol, q } = result.value;
-          if (q) {
-            const sym = (q.symbol as string) || symbol;
-            prices[sym] = {
-              price: (q.regularMarketPrice as number) ?? 0,
-              change: (q.regularMarketChange as number) ?? 0,
-              changePercent: (q.regularMarketChangePercent as number) ?? 0,
-              currency: (q.currency as string) ?? "USD",
-              name: (q.shortName as string) ?? (q.longName as string) ?? "",
-            };
-          }
+    // Transform eToro response to our price format
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prices: Record<string, any> = {};
+    if (Array.isArray(data)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const item of data as any[]) {
+        const symbol = item.instrumentId || item.symbol || item.name;
+        if (symbol) {
+          prices[symbol] = {
+            price: item.lastPrice ?? item.ask ?? item.bid ?? 0,
+            change: item.change ?? 0,
+            changePercent: item.changePercent ?? item.dailyChangePercent ?? 0,
+            currency: item.currency ?? "USD",
+            name: item.instrumentName ?? item.name ?? symbol,
+          };
         }
+      }
+    } else if (data && typeof data === "object") {
+      // Handle if response is keyed by instrument
+      for (const [key, val] of Object.entries(data)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const item = val as any;
+        prices[key] = {
+          price: item.lastPrice ?? item.ask ?? item.bid ?? 0,
+          change: item.change ?? 0,
+          changePercent: item.changePercent ?? item.dailyChangePercent ?? 0,
+          currency: item.currency ?? "USD",
+          name: item.instrumentName ?? item.name ?? key,
+        };
       }
     }
 
-    return NextResponse.json(
-      { prices },
-      {
-        headers: {
-          "Cache-Control": "public, s-maxage=60, stale-while-revalidate=120",
-        },
-      }
-    );
+    return NextResponse.json({ prices });
   } catch (e) {
-    console.error("Yahoo Finance error:", e);
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Failed to fetch prices" },
       { status: 500 }
     );
-  }
-}
-
-// GET /api/prices?q=Apple - search for ticker symbol by name
-export async function GET(req: NextRequest) {
-  const q = req.nextUrl.searchParams.get("q") || "";
-
-  if (!q) {
-    return NextResponse.json({ results: [] });
-  }
-
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const results: any = await yahooFinance.search(q, { quotesCount: 5, newsCount: 0 });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const quotes = (results.quotes || []).map((item: any) => ({
-      symbol: item.symbol || "",
-      name: item.shortname || item.longname || "",
-      type: item.quoteType || "",
-    }));
-    return NextResponse.json({ results: quotes });
-  } catch {
-    return NextResponse.json({ results: [] });
   }
 }
