@@ -267,34 +267,38 @@ export default function InvestmentsPage() {
     const winners = filteredPositions.filter((p) => p.profit > 0).length;
     const losers = filteredPositions.filter((p) => p.profit < 0).length;
 
-    // Allocation: prefer open positions from CSV, then derived from txs, then closed positions
-    let allocation: { name: string; value: number }[];
-    if (hasOpenFromCSV) {
-      allocation = openPositionsFromCSV.map((p) => ({
-        name: p.instrument,
-        value: Math.round(p.units * p.currentRate * 100) / 100,
-      }));
-    } else if (derivedOpenPositions.length > 0) {
-      // Aggregate derived open positions by instrument (at cost basis)
-      const byInstrument: Record<string, number> = {};
-      for (const p of derivedOpenPositions) {
-        byInstrument[p.instrument] = (byInstrument[p.instrument] || 0) + p.amount;
+    // Allocation: aggregate positions by instrument, group small slices into "Other"
+    const allocByInstrument: Record<string, number> = {};
+    const openPositions = etoroPositions.filter((p) => (p.status || "closed") === "open");
+    if (openPositions.length > 0) {
+      for (const p of openPositions) {
+        const val = p.currentRate > 0 ? p.units * p.currentRate : (p.amount || p.units * p.openRate);
+        allocByInstrument[p.instrument] = (allocByInstrument[p.instrument] || 0) + val;
       }
-      allocation = Object.entries(byInstrument)
-        .map(([name, value]) => ({ name, value: Math.round(value * 100) / 100 }))
-        .sort((a, b) => b.value - a.value)
-        .slice(0, 15);
+    } else if (derivedOpenPositions.length > 0) {
+      for (const p of derivedOpenPositions) {
+        allocByInstrument[p.instrument] = (allocByInstrument[p.instrument] || 0) + p.amount;
+      }
     } else {
-      // Fallback: aggregate closed positions by instrument
-      const byInstrument: Record<string, number> = {};
       for (const p of filteredPositions) {
         const amt = p.amount || p.units * p.openRate;
-        byInstrument[p.instrument] = (byInstrument[p.instrument] || 0) + amt;
+        allocByInstrument[p.instrument] = (allocByInstrument[p.instrument] || 0) + amt;
       }
-      allocation = Object.entries(byInstrument)
-        .map(([name, value]) => ({ name, value: Math.round(value * 100) / 100 }))
-        .sort((a, b) => b.value - a.value)
-        .slice(0, 15);
+    }
+
+    // Sort by value, take top 10, group remainder into "Other"
+    const sortedAlloc = Object.entries(allocByInstrument)
+      .map(([name, value]) => ({ name, value: Math.round(value * 100) / 100 }))
+      .sort((a, b) => b.value - a.value);
+
+    const MAX_SLICES = 10;
+    let allocation: { name: string; value: number }[];
+    if (sortedAlloc.length > MAX_SLICES) {
+      const top = sortedAlloc.slice(0, MAX_SLICES);
+      const otherValue = sortedAlloc.slice(MAX_SLICES).reduce((s, e) => s + e.value, 0);
+      allocation = [...top, { name: "Other", value: Math.round(otherValue * 100) / 100 }];
+    } else {
+      allocation = sortedAlloc;
     }
 
     // P/L aggregated by instrument (top 20 by absolute P/L)
@@ -304,7 +308,7 @@ export default function InvestmentsPage() {
     }
     const plData = Object.entries(plByInstrument)
       .map(([name, profit]) => ({
-        name: name.length > 12 ? name.slice(0, 12) + "..." : name,
+        name: name.length > 20 ? name.slice(0, 20) + "..." : name,
         profit: Math.round(profit * 100) / 100,
       }))
       .sort((a, b) => Math.abs(b.profit) - Math.abs(a.profit))
@@ -317,7 +321,7 @@ export default function InvestmentsPage() {
       allocation,
       plData,
     };
-  }, [filteredPositions, openPositionsFromCSV, derivedOpenPositions, hasOpenFromCSV]);
+  }, [filteredPositions, etoroPositions, derivedOpenPositions]);
 
   // Account balance over time (from transactions)
   const balanceOverTime = useMemo(() => {
@@ -646,19 +650,16 @@ export default function InvestmentsPage() {
             {portfolio.hasOpenPositions ? "Current Holdings Allocation" : "Capital Allocation by Instrument"}
           </h2>
           {stats.allocation.length > 0 ? (
-            <ResponsiveContainer width="100%" height={350}>
+            <ResponsiveContainer width="100%" height={400}>
               <PieChart>
                 <Pie
                   data={stats.allocation}
                   cx="50%"
-                  cy="50%"
-                  outerRadius={100}
+                  cy="45%"
+                  outerRadius={90}
+                  innerRadius={45}
                   dataKey="value"
-                  paddingAngle={1}
-                  label={({ name, percent }) =>
-                    `${name} ${((percent ?? 0) * 100).toFixed(0)}%`
-                  }
-                  labelLine={false}
+                  paddingAngle={2}
                   fontSize={11}
                 >
                   {stats.allocation.map((_, index) => (
@@ -676,6 +677,20 @@ export default function InvestmentsPage() {
                     color: "#e5e7eb",
                   }}
                   formatter={(value) => formatCurrency(Number(value), "USD")}
+                />
+                <Legend
+                  layout="horizontal"
+                  verticalAlign="bottom"
+                  align="center"
+                  iconType="circle"
+                  iconSize={8}
+                  wrapperStyle={{ fontSize: 11, color: "#9ca3af" }}
+                  formatter={(value) => {
+                    const item = stats.allocation.find((a) => a.name === value);
+                    const total = stats.allocation.reduce((s, a) => s + a.value, 0);
+                    const pct = item && total > 0 ? ((item.value / total) * 100).toFixed(0) : "0";
+                    return `${value} (${pct}%)`;
+                  }}
                 />
               </PieChart>
             </ResponsiveContainer>

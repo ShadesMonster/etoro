@@ -124,9 +124,7 @@ export async function GET(req: NextRequest) {
         getInstrumentNames().catch(() => ({} as Record<number, string>)),
       ]);
 
-      const getName = (id: number) => instrumentNames[id] ?? `Instrument ${id}`;
-
-      // Build rates map for current prices
+      // Build rates map for current prices, also extract names as fallback
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ratesMap: Record<number, any> = {};
       if (ratesData) {
@@ -134,9 +132,19 @@ export async function GET(req: NextRequest) {
         const ratesArr: any[] = ratesData?.rates ?? (Array.isArray(ratesData) ? ratesData : []);
         for (const r of ratesArr) {
           const id = r.instrumentID ?? r.InstrumentID;
-          if (id !== undefined) ratesMap[id] = r;
+          if (id !== undefined) {
+            ratesMap[id] = r;
+            // Use rate's instrument name as fallback if metadata didn't have it
+            if (!instrumentNames[id]) {
+              const name = r.instrumentDisplayName ?? r.InstrumentDisplayName ??
+                r.symbolFull ?? r.SymbolFull ?? r.name ?? r.Name;
+              if (name) instrumentNames[id] = name;
+            }
+          }
         }
       }
+
+      const getName = (id: number) => instrumentNames[id] ?? `#${id}`;
 
       // === OPEN POSITIONS from portfolio ===
       const cp = portfolioData?.clientPortfolio ?? portfolioData;
@@ -224,10 +232,13 @@ export async function GET(req: NextRequest) {
         };
       });
 
+      const unresolved = [...openPositions, ...closedPositions]
+        .filter((p) => p.instrument.startsWith("#")).length;
       console.log("[eToro Sync]", {
         instruments: Object.keys(instrumentNames).length,
         open: openPositions.length,
         closed: closedPositions.length,
+        unresolved,
         historyKeys: historyData ? Object.keys(historyData) : null,
       });
 
