@@ -1,9 +1,13 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useMemo, useState } from "react";
 import { useFinanceStore } from "@/lib/store";
 import { useToastStore } from "@/lib/toast";
-import { exportTransactionsCSV, exportEtoroCSV } from "@/lib/utils";
+import {
+  exportTransactionsCSV, exportEtoroCSV, formatCurrency, formatDate,
+  findDuplicateTransactions,
+} from "@/lib/utils";
+import { ALL_CATEGORIES, CATEGORY_LABELS, SpendingCategory } from "@/lib/types";
 import FileUpload from "@/components/FileUpload";
 
 function downloadFile(content: string, filename: string, type = "text/csv") {
@@ -28,9 +32,26 @@ export default function UploadPage() {
     clearAll,
     exportData,
     importData,
+    removeTransactions,
+    bulkSetCategory,
   } = useFinanceStore();
   const addToast = useToastStore((s) => s.addToast);
   const restoreInputRef = useRef<HTMLInputElement>(null);
+  const [bulkCat, setBulkCat] = useState<SpendingCategory>("other");
+  const [bulkSearch, setBulkSearch] = useState("");
+
+  // Find duplicates
+  const duplicates = useMemo(
+    () => findDuplicateTransactions(transactions),
+    [transactions]
+  );
+
+  // Bulk recategorise matches
+  const bulkMatches = useMemo(() => {
+    if (!bulkSearch.trim()) return [];
+    const q = bulkSearch.toLowerCase();
+    return transactions.filter((t) => t.description.toLowerCase().includes(q));
+  }, [transactions, bulkSearch]);
 
   const hasAnyData =
     transactions.length > 0 ||
@@ -192,6 +213,124 @@ export default function UploadPage() {
           )}
         </div>
       </div>
+
+      {/* Data Cleanup Tools */}
+      {transactions.length > 0 && (
+        <div className="card">
+          <h2 className="text-lg font-semibold text-white mb-4">
+            Data Cleanup Tools
+          </h2>
+
+          {/* Duplicate detection */}
+          {duplicates.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-sm font-medium text-white mb-2">
+                Potential Duplicates ({duplicates.length} groups)
+              </h3>
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {duplicates.slice(0, 10).map((group) => (
+                  <div
+                    key={group.key}
+                    className="flex items-center justify-between py-2 px-3 rounded-lg bg-[var(--background)]"
+                  >
+                    <div>
+                      <p className="text-sm text-white">
+                        {group.transactions[0].description}
+                      </p>
+                      <p className="text-xs text-[var(--muted)]">
+                        {formatDate(group.transactions[0].date)} &middot;{" "}
+                        {formatCurrency(Math.abs(group.transactions[0].amount))} &middot;{" "}
+                        {group.transactions.length} copies
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const keep = group.transactions[0].id;
+                        const remove = group.transactions.slice(1).map((t) => t.id);
+                        removeTransactions(remove);
+                        addToast(
+                          `Removed ${remove.length} duplicate(s)`,
+                          "success"
+                        );
+                      }}
+                      className="text-xs text-[var(--accent)] hover:underline"
+                    >
+                      Keep 1, remove {group.transactions.length - 1}
+                    </button>
+                  </div>
+                ))}
+              </div>
+              {duplicates.length > 10 && (
+                <p className="text-xs text-[var(--muted)] mt-2">
+                  Showing 10 of {duplicates.length} groups
+                </p>
+              )}
+            </div>
+          )}
+
+          {duplicates.length === 0 && (
+            <p className="text-sm text-[var(--muted)] mb-4">
+              No duplicate transactions found.
+            </p>
+          )}
+
+          {/* Bulk recategorise */}
+          <h3 className="text-sm font-medium text-white mb-2">
+            Bulk Recategorise
+          </h3>
+          <div className="flex flex-wrap gap-3 items-end">
+            <div>
+              <label className="text-xs text-[var(--muted)] block mb-1">
+                Search description
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. tesco"
+                value={bulkSearch}
+                onChange={(e) => setBulkSearch(e.target.value)}
+                className="w-48"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[var(--muted)] block mb-1">
+                New category
+              </label>
+              <select
+                value={bulkCat}
+                onChange={(e) => setBulkCat(e.target.value as SpendingCategory)}
+                className="w-48"
+              >
+                {ALL_CATEGORIES.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {CATEGORY_LABELS[cat]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              onClick={() => {
+                if (bulkMatches.length === 0) {
+                  addToast("No matching transactions", "warning");
+                  return;
+                }
+                bulkSetCategory(
+                  bulkMatches.map((t) => t.id),
+                  bulkCat
+                );
+                addToast(
+                  `Recategorised ${bulkMatches.length} transactions to ${CATEGORY_LABELS[bulkCat]}`,
+                  "success"
+                );
+                setBulkSearch("");
+              }}
+              className="btn-primary text-sm"
+              disabled={bulkMatches.length === 0}
+            >
+              Apply ({bulkMatches.length} matches)
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

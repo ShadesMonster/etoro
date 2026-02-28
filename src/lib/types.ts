@@ -163,3 +163,69 @@ export interface UpcomingBill {
   expectedAmount: number;
   frequency: string;
 }
+
+// ─── Round 3 types ───────────────────────────────────────────────────────────
+
+export interface Debt {
+  id: string;
+  name: string;
+  type: "credit-card" | "loan" | "mortgage" | "other";
+  balance: number;
+  interestRate: number;
+  minimumPayment: number;
+  dueDate?: string;
+}
+
+export type DashboardWidget =
+  | "net-worth"
+  | "net-worth-chart"
+  | "spending-breakdown"
+  | "this-month"
+  | "budget-status"
+  | "savings-rate"
+  | "alerts"
+  | "upcoming-bills"
+  | "merchant-insights"
+  | "heatmap";
+
+export const ALL_WIDGETS: { id: DashboardWidget; label: string }[] = [
+  { id: "net-worth", label: "Net Worth Cards" },
+  { id: "net-worth-chart", label: "Net Worth Chart" },
+  { id: "spending-breakdown", label: "Spending Breakdown" },
+  { id: "this-month", label: "This Month Summary" },
+  { id: "budget-status", label: "Budget Status" },
+  { id: "savings-rate", label: "Savings Rate" },
+  { id: "alerts", label: "Alerts & Notifications" },
+  { id: "upcoming-bills", label: "Upcoming Bills" },
+  { id: "merchant-insights", label: "Top Merchants" },
+  { id: "heatmap", label: "Spending Heatmap" },
+];
+
+export const DEFAULT_WIDGETS: DashboardWidget[] = [
+  "net-worth", "net-worth-chart", "spending-breakdown",
+  "this-month", "budget-status", "savings-rate",
+  "alerts", "upcoming-bills", "merchant-insights", "heatmap",
+];
+
+export interface MerchantInsight {
+  merchant: string;
+  totalSpent: number;
+  transactionCount: number;
+  avgAmount: number;
+  lastDate: string;
+  category: SpendingCategory;
+}
+
+export interface AnomalyTransaction {
+  transaction: Transaction;
+  reason: string;
+  severity: "warning" | "alert";
+  averageForCategory: number;
+}
+
+export interface FinancialAlert {
+  id: string;
+  type: "budget-exceeded" | "large-transaction" | "bill-due" | "goal-reached";
+  message: string;
+  date: string;
+}

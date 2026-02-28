@@ -24,6 +24,8 @@ import {
   calculateSpendingForecast,
   calculateSpendingTrends,
   getUpcomingBills,
+  getMerchantInsights,
+  detectAnomalies,
 } from "@/lib/utils";
 import {
   CATEGORY_LABELS,
@@ -35,6 +37,10 @@ import StatCard from "@/components/StatCard";
 import Pagination from "@/components/Pagination";
 
 const PAGE_SIZE = 25;
+const BANK_LABELS: Record<string, string> = {
+  barclays: "Barclays", monzo: "Monzo", revolut: "Revolut",
+  starling: "Starling", generic: "Other",
+};
 
 export default function SpendingPage() {
   const { transactions, categoryOverrides, setTransactionCategory, budgets } =
@@ -44,15 +50,25 @@ export default function SpendingPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
+  const [sourceFilter, setSourceFilter] = useState<string>("all");
 
-  // Apply category overrides to get effective categories
+  // Get unique bank sources
+  const sources = useMemo(() => {
+    const s = new Set(transactions.map((t) => t.source));
+    return Array.from(s);
+  }, [transactions]);
+
+  // Apply category overrides and source filter
   const txsWithCategory = useMemo(
-    () =>
-      transactions.map((t) => ({
+    () => {
+      let txs = transactions;
+      if (sourceFilter !== "all") txs = txs.filter((t) => t.source === sourceFilter);
+      return txs.map((t) => ({
         ...t,
         effectiveCategory: getEffectiveCategory(t, categoryOverrides || {}),
-      })),
-    [transactions, categoryOverrides]
+      }));
+    },
+    [transactions, categoryOverrides, sourceFilter]
   );
 
   // Filter by date range
@@ -166,6 +182,18 @@ export default function SpendingPage() {
     [recurring]
   );
 
+  // Anomalies
+  const anomalies = useMemo(
+    () => detectAnomalies(transactions, categoryOverrides || {}),
+    [transactions, categoryOverrides]
+  );
+
+  // Top merchants
+  const merchants = useMemo(
+    () => getMerchantInsights(transactions, categoryOverrides || {}).slice(0, 10),
+    [transactions, categoryOverrides]
+  );
+
   // Paginated + filtered transactions
   const filteredTransactions = useMemo(() => {
     if (!selectedCategory) return spending;
@@ -254,12 +282,32 @@ export default function SpendingPage() {
               }}
             />
           </div>
-          {(searchQuery || dateFrom || dateTo) && (
+          {sources.length > 1 && (
+            <div>
+              <label className="text-xs text-[var(--muted)] block mb-1">
+                Account
+              </label>
+              <select
+                value={sourceFilter}
+                onChange={(e) => { setSourceFilter(e.target.value); setPage(1); }}
+                className="w-36"
+              >
+                <option value="all">All Accounts</option>
+                {sources.map((s) => (
+                  <option key={s} value={s}>
+                    {BANK_LABELS[s] || s}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {(searchQuery || dateFrom || dateTo || sourceFilter !== "all") && (
             <button
               onClick={() => {
                 setSearchQuery("");
                 setDateFrom("");
                 setDateTo("");
+                setSourceFilter("all");
                 setPage(1);
               }}
               className="btn-secondary text-sm"
@@ -582,6 +630,73 @@ export default function SpendingPage() {
           </div>
         </div>
       )}
+
+      {/* Anomalies + Merchant Insights */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {anomalies.length > 0 && (
+          <div className="card">
+            <h2 className="text-lg font-semibold text-white mb-4">
+              Unusual Transactions
+            </h2>
+            <div className="space-y-2">
+              {anomalies.slice(0, 5).map((a, i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between py-2 px-3 rounded-lg"
+                  style={{
+                    background: a.severity === "alert"
+                      ? "rgba(239,68,68,0.06)"
+                      : "rgba(234,179,8,0.06)",
+                    borderLeft: `3px solid ${a.severity === "alert" ? "#ef4444" : "#eab308"}`,
+                  }}
+                >
+                  <div>
+                    <p className="text-sm text-white">{a.transaction.description}</p>
+                    <p className="text-xs text-[var(--muted)]">{a.reason}</p>
+                  </div>
+                  <span className="text-sm negative">
+                    -{formatCurrency(Math.abs(a.transaction.amount))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {merchants.length > 0 && (
+          <div className="card">
+            <h2 className="text-lg font-semibold text-white mb-4">
+              Top Merchants
+            </h2>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[var(--muted)] border-b border-[var(--card-border)]">
+                    <th className="pb-2 pr-4">Merchant</th>
+                    <th className="pb-2 pr-4 text-right">Total</th>
+                    <th className="pb-2 pr-4 text-right">Avg</th>
+                    <th className="pb-2 text-right">Count</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {merchants.map((m, i) => (
+                    <tr key={i} className="border-b border-[var(--card-border)]/50">
+                      <td className="py-1.5 pr-4 text-white capitalize">{m.merchant}</td>
+                      <td className="py-1.5 pr-4 text-right negative">
+                        -{formatCurrency(m.totalSpent)}
+                      </td>
+                      <td className="py-1.5 pr-4 text-right text-[var(--muted)]">
+                        {formatCurrency(m.avgAmount)}
+                      </td>
+                      <td className="py-1.5 text-right text-[var(--muted)]">{m.transactionCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Transaction list */}
       <div className="card">

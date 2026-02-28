@@ -7,6 +7,8 @@ import {
   CATEGORY_LABELS,
   ALL_CATEGORIES,
   SpendingCategory,
+  ALL_WIDGETS,
+  DashboardWidget,
 } from "@/lib/types";
 import { formatCurrency } from "@/lib/utils";
 
@@ -24,6 +26,8 @@ export default function SettingsPage() {
     addSavingsGoal,
     removeSavingsGoal,
     updateSavingsGoal,
+    dashboardWidgets,
+    setDashboardWidgets,
   } = useFinanceStore();
   const addToast = useToastStore((s) => s.addToast);
 
@@ -136,6 +140,70 @@ export default function SettingsPage() {
               {t === "dark" ? "\uD83C\uDF19 Dark" : "\u2600\uFE0F Light"}
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* Dashboard Widgets */}
+      <div className="card">
+        <h2 className="text-lg font-semibold text-white mb-4">
+          Dashboard Widgets
+        </h2>
+        <p className="text-sm text-[var(--muted)] mb-4">
+          Choose which sections to show on your dashboard.
+        </p>
+        <div className="space-y-2">
+          {ALL_WIDGETS.map((w) => {
+            const enabled = (dashboardWidgets || []).includes(w.id);
+            return (
+              <label
+                key={w.id}
+                className="flex items-center gap-3 py-2 px-3 rounded-lg bg-[var(--background)] cursor-pointer hover:bg-[var(--card-border)] transition-colors"
+              >
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={() => {
+                    const current = dashboardWidgets || [];
+                    if (enabled) {
+                      setDashboardWidgets(
+                        current.filter((id: DashboardWidget) => id !== w.id)
+                      );
+                    } else {
+                      setDashboardWidgets([...current, w.id]);
+                    }
+                  }}
+                  className="w-4 h-4 accent-[var(--accent)]"
+                />
+                <span
+                  className={`text-sm ${
+                    enabled ? "text-white" : "text-[var(--muted)]"
+                  }`}
+                >
+                  {w.label}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        <div className="flex gap-2 mt-4">
+          <button
+            onClick={() => {
+              setDashboardWidgets(ALL_WIDGETS.map((w) => w.id));
+              addToast("All widgets enabled", "success");
+            }}
+            className="btn-primary text-sm"
+          >
+            Show All
+          </button>
+          <button
+            onClick={() => {
+              setDashboardWidgets([]);
+              addToast("All widgets hidden", "info");
+            }}
+            className="text-sm px-4 py-2 rounded-lg bg-[var(--card-border)] text-[var(--muted)] hover:text-white transition-colors"
+          >
+            Hide All
+          </button>
         </div>
       </div>
 

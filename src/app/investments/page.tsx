@@ -51,7 +51,18 @@ export default function InvestmentsPage() {
         tx.detail.toLowerCase().includes("dividend")
     );
     const totalDividends = dividends.reduce((s, tx) => s + tx.amount, 0);
-    return { dividends, totalDividends, count: dividends.length };
+
+    // Monthly dividend income
+    const monthlyDivs: Record<string, number> = {};
+    for (const d of dividends) {
+      const m = d.date.slice(0, 7);
+      monthlyDivs[m] = (monthlyDivs[m] || 0) + d.amount;
+    }
+    const divMonths = Object.keys(monthlyDivs).length;
+    const avgMonthlyDiv = divMonths > 0 ? totalDividends / divMonths : 0;
+    const projectedAnnual = avgMonthlyDiv * 12;
+
+    return { dividends, totalDividends, count: dividends.length, avgMonthlyDiv, projectedAnnual };
   }, [etoroTransactions]);
 
   const stats = useMemo(() => {
@@ -183,10 +194,45 @@ export default function InvestmentsPage() {
         <StatCard
           label="Dividends"
           value={formatCurrency(dividendStats.totalDividends, "USD")}
-          subtitle={`${dividendStats.count} payments`}
+          subtitle={`~${formatCurrency(dividendStats.projectedAnnual, "USD")}/yr projected`}
           trend={dividendStats.totalDividends > 0 ? "up" : "neutral"}
         />
       </div>
+
+      {/* Performance Benchmark */}
+      {stats.profitPercent !== 0 && (
+        <div className="card">
+          <h2 className="text-lg font-semibold text-white mb-3">
+            Performance Benchmark
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="p-3 rounded-lg bg-[var(--background)]">
+              <p className="text-xs text-[var(--muted)] mb-1">Your Return</p>
+              <p className={`text-xl font-bold ${stats.profitPercent >= 0 ? "positive" : "negative"}`}>
+                {formatPercent(stats.profitPercent)}
+              </p>
+            </div>
+            <div className="p-3 rounded-lg bg-[var(--background)]">
+              <p className="text-xs text-[var(--muted)] mb-1">S&P 500 (avg annual)</p>
+              <p className="text-xl font-bold text-white">+10.00%</p>
+              <p className={`text-xs ${stats.profitPercent > 10 ? "positive" : "negative"}`}>
+                {stats.profitPercent > 10 ? "Outperforming" : "Underperforming"} by {Math.abs(stats.profitPercent - 10).toFixed(2)}%
+              </p>
+            </div>
+            <div className="p-3 rounded-lg bg-[var(--background)]">
+              <p className="text-xs text-[var(--muted)] mb-1">FTSE 100 (avg annual)</p>
+              <p className="text-xl font-bold text-white">+7.50%</p>
+              <p className={`text-xs ${stats.profitPercent > 7.5 ? "positive" : "negative"}`}>
+                {stats.profitPercent > 7.5 ? "Outperforming" : "Underperforming"} by {Math.abs(stats.profitPercent - 7.5).toFixed(2)}%
+              </p>
+            </div>
+          </div>
+          <p className="text-xs text-[var(--muted)] mt-2">
+            Note: Benchmark figures are historical averages for reference only.
+            Your return is calculated from your actual eToro positions.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* P/L bar chart */}
