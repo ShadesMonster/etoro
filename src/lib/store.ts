@@ -1,12 +1,105 @@
 "use client";
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
 import {
   Transaction, EtoroPosition, EtoroTransaction, EtoroDividend, RetirementFund,
   Budget, CategoryRule, SavingsGoal, UserSettings, SpendingCategory,
   Debt, DashboardWidget, DEFAULT_WIDGETS,
 } from "./types";
+
+// ─── IndexedDB Storage Adapter ──────────────────────────────────────────────
+const DB_NAME = "finance-tracker-db";
+const STORE_NAME = "keyval";
+const STORAGE_KEY = "finance-tracker-storage";
+
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(STORE_NAME);
+    };
+  });
+}
+
+const indexedDBStorage: StateStorage = {
+  getItem: async (name: string): Promise<string | null> => {
+    // Try IndexedDB first
+    try {
+      const db = await openDB();
+      const result = await new Promise<string | null>((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, "readonly");
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.get(name);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result ?? null);
+      });
+      if (result !== null) return result;
+    } catch {
+      // IndexedDB not available, fall through
+    }
+
+    // Migrate from localStorage if data exists there
+    try {
+      const localData = localStorage.getItem(name);
+      if (localData) {
+        // Migrate to IndexedDB and clear localStorage
+        try {
+          const db = await openDB();
+          await new Promise<void>((resolve, reject) => {
+            const tx = db.transaction(STORE_NAME, "readwrite");
+            const store = tx.objectStore(STORE_NAME);
+            const request = store.put(localData, name);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve();
+          });
+          localStorage.removeItem(name);
+        } catch {
+          // If migration fails, still return the data
+        }
+        return localData;
+      }
+    } catch {
+      // localStorage not available
+    }
+
+    return null;
+  },
+  setItem: async (name: string, value: string): Promise<void> => {
+    try {
+      const db = await openDB();
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, "readwrite");
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.put(value, name);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve();
+      });
+      // Clean up localStorage if it had old data
+      try { localStorage.removeItem(name); } catch {}
+    } catch {
+      // Fallback to localStorage if IndexedDB fails
+      localStorage.setItem(name, value);
+    }
+  },
+  removeItem: async (name: string): Promise<void> => {
+    try {
+      const db = await openDB();
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, "readwrite");
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.delete(name);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve();
+      });
+    } catch {}
+    try { localStorage.removeItem(name); } catch {}
+  },
+};
+
+// ─── Store Interface ────────────────────────────────────────────────────────
 
 interface FinanceStore {
   transactions: Transaction[];
@@ -174,7 +267,10 @@ export const useFinanceStore = create<FinanceStore>()(
         } catch { return false; }
       },
     }),
-    { name: "finance-tracker-storage" }
+    {
+      name: STORAGE_KEY,
+      storage: createJSONStorage(() => indexedDBStorage),
+    }
   )
 );
 
