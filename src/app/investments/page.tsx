@@ -713,43 +713,43 @@ export default function InvestmentsPage() {
             <p className="text-[var(--muted)] text-sm">No data.</p>
           )}
         </div>
-      </div>
 
-      {/* Account balance over time */}
-      {balanceOverTime.length > 1 && (
-        <div className="card">
-          <h2 className="text-lg font-semibold text-white mb-4">
-            Account Balance Over Time
-          </h2>
-          <ResponsiveContainer width="100%" height={250}>
-            <AreaChart data={balanceOverTime}>
-              <XAxis dataKey="month" stroke="#6b7280" fontSize={12} />
-              <YAxis
-                stroke="#6b7280"
-                fontSize={12}
-                tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: "#1e1e2e",
-                  border: "1px solid #2e2e3e",
-                  borderRadius: 8,
-                  color: "#e5e7eb",
-                }}
-                formatter={(value) => formatCurrency(Number(value), "USD")}
-              />
-              <Area
-                type="monotone"
-                dataKey="Balance"
-                stroke="#6366f1"
-                fill="#6366f1"
-                fillOpacity={0.15}
-                strokeWidth={2}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      )}
+        {/* Account balance over time (right column, below pie chart) */}
+        {balanceOverTime.length > 1 && (
+          <div className="card">
+            <h2 className="text-lg font-semibold text-white mb-4">
+              Account Balance Over Time
+            </h2>
+            <ResponsiveContainer width="100%" height={250}>
+              <AreaChart data={balanceOverTime}>
+                <XAxis dataKey="month" stroke="#6b7280" fontSize={12} />
+                <YAxis
+                  stroke="#6b7280"
+                  fontSize={12}
+                  tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "#1e1e2e",
+                    border: "1px solid #2e2e3e",
+                    borderRadius: 8,
+                    color: "#e5e7eb",
+                  }}
+                  formatter={(value) => formatCurrency(Number(value), "USD")}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="Balance"
+                  stroke="#6366f1"
+                  fill="#6366f1"
+                  fillOpacity={0.15}
+                  strokeWidth={2}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
 
       {/* Positions table */}
       <div className="card">
