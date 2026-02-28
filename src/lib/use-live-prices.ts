@@ -86,14 +86,10 @@ export function useLivePrices(): UseLivePricesResult {
         }
       }
 
-      console.log("[eToro API] Fetching portfolio + equity endpoints + debug...");
+      console.log("[eToro API] Fetching portfolio...");
 
-      // Fetch portfolio, equity endpoints, and debug info in parallel
-      const [portfolioRes, pnlRes, debugRes] = await Promise.all([
-        fetch("/api/prices?action=portfolio"),
-        fetch("/api/prices?action=pnl").catch(() => null),
-        fetch("/api/prices?action=debug").catch(() => null),
-      ]);
+      // Fetch portfolio
+      const portfolioRes = await fetch("/api/prices?action=portfolio");
 
       if (!portfolioRes.ok) {
         const data = await portfolioRes.json().catch(() => ({}));
@@ -102,49 +98,6 @@ export function useLivePrices(): UseLivePricesResult {
 
       const portfolioData = await portfolioRes.json();
       const cp = portfolioData?.clientPortfolio ?? portfolioData;
-
-      // Log debug info (all portfolio field names)
-      if (debugRes && debugRes.ok) {
-        const debugData = await debugRes.json();
-        console.log("[eToro API] DEBUG - Top-level keys:", debugData.topLevelKeys);
-        console.log("[eToro API] DEBUG - Top-level numeric fields:", debugData.topLevelNumericFields);
-        console.log("[eToro API] DEBUG - Full clientPortfolio structure:", JSON.stringify(debugData.clientPortfolioStructure, null, 2));
-      }
-
-      // Parse equity endpoints - look for any that returned useful data
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let pnlData: any = null;
-      if (pnlRes && pnlRes.ok) {
-        const pnlResponse = await pnlRes.json();
-        console.log("[eToro API] Equity endpoints response:", pnlResponse);
-
-        // New format: { results: [{endpoint, data}, ...], errors: [...] }
-        if (pnlResponse.results && Array.isArray(pnlResponse.results)) {
-          for (const result of pnlResponse.results) {
-            console.log(`[eToro API] Successful endpoint ${result.endpoint}:`, result.data);
-            // Look for equity/balance/pnl in the data
-            const d = result.data;
-            if (d && typeof d === "object") {
-              // Check for any field that might be equity
-              const equityFields = ["equity", "netEquity", "totalEquity", "Equity",
-                "balance", "totalBalance", "Balance", "availableBalance",
-                "portfolioValue", "totalValue", "accountValue",
-                "credit", "realizedCredit", "totalCredit"];
-              for (const field of equityFields) {
-                if (typeof d[field] === "number" && d[field] > 0) {
-                  console.log(`[eToro API] Found equity field "${field}" = ${d[field]} from ${result.endpoint}`);
-                  if (!pnlData) pnlData = d;
-                }
-              }
-            }
-          }
-        } else if (pnlResponse.data) {
-          // Old format: { endpoint, data }
-          pnlData = pnlResponse.data;
-        } else {
-          pnlData = pnlResponse;
-        }
-      }
 
       const topCredit = cp?.credit ?? 0;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -155,16 +108,8 @@ export function useLivePrices(): UseLivePricesResult {
       // === COMPUTE FROM MIRROR-LEVEL SUMMARY DATA ===
       // Each mirror has: depositSummary, withdrawalSummary, closedPositionsNetProfit,
       // availableAmount, initialInvestment, positions[]
-      //
-      // Mirror equity = availableAmount + currentValueOfOpenPositions
-      // But since position amounts are 0, we can't compute position values easily.
-      //
-      // Instead, use the financial flow:
-      //   costBasisInOpenPositions = depositSummary - withdrawalSummary
-      //                             + closedPositionsNetProfit - availableAmount
-      //   This tells us how much cash is tied up in open positions (at cost).
-      //
-      // For portfolio value, we need PnL or we estimate from available data.
+      // Mirror positions have copier's real units, amount, and openRate.
+      // Portfolio value = totalAvailable + sum(position.units * currentPrice)
 
       let totalDeposited = 0;
       let totalWithdrawn = 0;
@@ -220,101 +165,110 @@ export function useLivePrices(): UseLivePricesResult {
       });
 
       // === DETERMINE PORTFOLIO VALUE ===
-      // Option 1: PnL endpoint gives us total P/L directly
-      // Option 2: Estimate from deposits + closed P/L (missing unrealized P/L)
-      //
-      // PnL data might contain equity, totalPL, etc.
+      // Compute from positions (copier's real units) + live rates
       let netEquity: number | undefined;
       let totalPL: number | undefined;
       let totalPLPercent: number | undefined;
 
-      if (pnlData) {
-        // Try to extract equity/PnL from the PnL endpoint
-        const pnl = pnlData?.pnl ?? pnlData?.clientPnl ?? pnlData;
-        netEquity = pnl?.equity ?? pnl?.netEquity ?? pnl?.totalEquity ?? pnl?.Equity;
-        totalPL = pnl?.totalPnl ?? pnl?.totalPL ?? pnl?.pnl ?? pnl?.TotalPnl;
-        totalPLPercent = pnl?.totalPnlPercent ?? pnl?.totalPLPercent;
-
-        console.log("[eToro API] PnL extracted:", { netEquity, totalPL, totalPLPercent });
-      }
-
-      // If PnL endpoint didn't give us equity, try to find it from mirror-level data
+      // If PnL endpoint didn't give us equity, compute from positions + rates
+      // Mirror positions have the COPIER's real data:
+      //   - units: copier's actual units (verified: units * openRate = amount)
+      //   - amount: copier's invested amount in dollars
+      //   - openRate: the price when position was opened
+      // Only the top-level direct position has zeros for openRate/amount.
       if (netEquity === undefined) {
-        // Log ALL keys from the first mirror to discover any equity/value fields
-        if (mirrors.length > 0) {
-          const sampleMirror = mirrors[0];
-          console.log("[eToro API] ALL mirror keys:", Object.keys(sampleMirror));
-          // Log all non-array, non-object values from the mirror
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const mirrorScalarFields: Record<string, any> = {};
-          for (const [key, val] of Object.entries(sampleMirror)) {
-            if (typeof val !== "object" || val === null) {
-              mirrorScalarFields[key] = val;
-            }
-          }
-          console.log("[eToro API] Mirror scalar fields (sample):", mirrorScalarFields);
+        console.log("[eToro API] Computing equity from positions + live rates...");
+        const ratesRes = await fetch("/api/prices?action=rates").catch(() => null);
 
-          // Check first mirror position for ALL keys too
-          if (Array.isArray(sampleMirror.positions) && sampleMirror.positions.length > 0) {
-            console.log("[eToro API] ALL position keys:", Object.keys(sampleMirror.positions[0]));
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const posScalars: Record<string, any> = {};
-            for (const [key, val] of Object.entries(sampleMirror.positions[0])) {
-              if (typeof val !== "object" || val === null) posScalars[key] = val;
-            }
-            console.log("[eToro API] Position scalar fields (sample):", posScalars);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ratesMap: Record<number, any> = {};
+        if (ratesRes && ratesRes.ok) {
+          const ratesData = await ratesRes.json();
+          const ratesArr = ratesData?.rates ?? (Array.isArray(ratesData) ? ratesData : []);
+          for (const r of ratesArr) {
+            const id = r.instrumentID ?? r.InstrumentID;
+            if (id !== undefined) ratesMap[id] = r;
           }
+          console.log("[eToro API] Rates loaded:", Object.keys(ratesMap).length, "instruments");
         }
 
-        // Check if mirrors have equity/value fields we haven't used yet
-        let foundMirrorEquity = false;
-        let totalMirrorEquity = 0;
+        // Collect all positions from mirrors + direct
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const allOpenPositions: any[] = [];
         for (const m of mirrors) {
-          // Try common field names for mirror equity/value
-          const mirrorValue = m.equity ?? m.mirrorEquity ?? m.currentValue ?? m.value
-            ?? m.totalValue ?? m.netEquity ?? m.mirrorValue ?? m.copyValue
-            ?? m.portfolioValue ?? m.openPositionsValue ?? m.currentEquity;
-          if (typeof mirrorValue === "number" && mirrorValue > 0) {
-            totalMirrorEquity += mirrorValue;
-            foundMirrorEquity = true;
+          if (Array.isArray(m.positions)) allOpenPositions.push(...m.positions);
+        }
+        allOpenPositions.push(...directPositions);
+
+        let totalCurrentValue = 0;
+        let totalCostBasis = 0;
+        let matched = 0;
+        let unmatched = 0;
+
+        for (const pos of allOpenPositions) {
+          const rate = ratesMap[pos.instrumentID];
+          if (rate && pos.units > 0) {
+            // Use bid for buy positions (sell price), ask for sell positions (buy-to-close price)
+            const currentPrice = pos.isBuy
+              ? (rate.bid ?? rate.Bid ?? 0)
+              : (rate.ask ?? rate.Ask ?? 0);
+
+            if (currentPrice > 0) {
+              totalCurrentValue += pos.units * currentPrice;
+              matched++;
+            } else {
+              unmatched++;
+            }
+          } else {
+            unmatched++;
+          }
+
+          // Cost basis: use amount field (copier's invested $)
+          if (pos.amount > 0) {
+            totalCostBasis += pos.amount;
           }
         }
 
-        if (foundMirrorEquity) {
-          netEquity = totalAvailable + totalMirrorEquity;
-          console.log("[eToro API] Found mirror equity fields! Total:", totalMirrorEquity, "Net equity:", netEquity);
-        } else {
-          // No equity field found on mirrors.
-          // IMPORTANT: Do NOT use units * price for mirror positions because
-          // the `units` field contains the PARENT TRADER's units, not the copier's share.
-          // This would give ~$224K instead of ~$24K.
-          //
-          // Best estimate without unrealized P/L:
-          // netDeposited + closedPL = what we put in + what we took out from closed trades
-          // This is a lower bound (missing unrealized gains on open positions).
-          const costBasisInOpen = netDeposited + totalClosedPL - totalAvailable;
-          const estimatedEquity = netDeposited + totalClosedPL;
-
-          console.log("[eToro API] No equity endpoint or mirror equity field found.");
-          console.log("[eToro API] Using conservative estimate (missing unrealized P/L on open positions):", {
-            netDeposited,
-            totalClosedPL,
-            totalAvailable,
-            costBasisInOpen,
-            estimatedEquity,
-            note: "Check DEBUG output above for all available fields - there may be an equity field we haven't tried."
+        // Log first 5 positions with details for verification
+        let logged = 0;
+        for (const pos of allOpenPositions) {
+          if (logged >= 5) break;
+          const rate = ratesMap[pos.instrumentID];
+          const currentPrice = rate
+            ? (pos.isBuy ? (rate.bid ?? rate.Bid ?? 0) : (rate.ask ?? rate.Ask ?? 0))
+            : 0;
+          console.log(`[eToro API] Position ${logged + 1}:`, {
+            instrumentID: pos.instrumentID,
+            units: pos.units,
+            openRate: pos.openRate,
+            amount: pos.amount,
+            currentPrice,
+            currentValue: currentPrice > 0 ? (pos.units * currentPrice).toFixed(2) : "N/A",
+            mirrorID: pos.mirrorID,
           });
-
-          // Don't set netEquity - leave it undefined so the page uses CSV-based estimate
-          // The user will see the estimate from their transaction/position CSV data
+          logged++;
         }
+
+        const unrealizedPL = totalCurrentValue - totalCostBasis;
+        netEquity = totalAvailable + totalCurrentValue;
+
+        console.log("[eToro API] Rates computation:", {
+          totalPositions: allOpenPositions.length,
+          matched,
+          unmatched,
+          totalCostBasis: totalCostBasis.toFixed(2),
+          totalCurrentValue: totalCurrentValue.toFixed(2),
+          unrealizedPL: unrealizedPL.toFixed(2),
+          totalAvailable: totalAvailable.toFixed(2),
+          netEquity: netEquity.toFixed(2),
+        });
       }
 
-      if (totalPL === undefined) {
-        totalPL = (netEquity ?? 0) - netDeposited;
+      if (totalPL === undefined && netEquity !== undefined) {
+        totalPL = netEquity - netDeposited;
       }
 
-      if (totalPLPercent === undefined && netDeposited > 0) {
+      if (totalPLPercent === undefined && netDeposited > 0 && totalPL !== undefined) {
         totalPLPercent = (totalPL / netDeposited) * 100;
       }
 
