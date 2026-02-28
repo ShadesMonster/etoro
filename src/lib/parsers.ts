@@ -44,8 +44,9 @@ export function parseBarclaysCSV(
 
   for (const row of data) {
     const date = row["date"] || "";
+    const subcategory = row["subcategory"] || "";
     const description =
-      row["memo"] || row["description"] || row["subcategory"] || "";
+      row["memo"] || row["description"] || subcategory || "";
     let amount = 0;
 
     if (row["amount"]) {
@@ -75,7 +76,7 @@ export function parseBarclaysCSV(
       description: description.trim(),
       amount,
       balance,
-      category: categorizeTransaction(description, amount, customRules),
+      category: categorizeTransaction(description, amount, customRules, subcategory),
       source: "barclays",
     });
   }

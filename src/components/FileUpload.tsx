@@ -191,8 +191,9 @@ export default function FileUpload() {
         <div className="card">
           <h3 className="font-semibold mb-2 text-white">Barclays</h3>
           <p className="text-[var(--muted)]">
-            Export from Barclays Online Banking. Expected columns: Date,
-            Description, Money In, Money Out, Balance.
+            Export from Barclays Online Banking. Supports both formats:
+            Number/Date/Account/Amount/Subcategory/Memo and
+            Date/Description/Money In/Money Out/Balance.
           </p>
         </div>
         <div className="card">

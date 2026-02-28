@@ -14,10 +14,22 @@ const CATEGORY_RULES: Array<{ pattern: RegExp; category: SpendingCategory }> = [
   { pattern: /\b(transfer|standing order|direct debit)\b/i, category: "transfers" },
 ];
 
+// Barclays subcategory → fallback category (used when description doesn't match)
+const SUBCATEGORY_HINTS: Record<string, SpendingCategory> = {
+  "cash withdrawal": "cash",
+  "standing order": "bills",
+  "direct debit": "bills",
+  "bill payment": "bills",
+  "funds transfer": "transfers",
+  "counter credit": "income",
+  "credit payment": "income",
+};
+
 export function categorizeTransaction(
   description: string,
   amount: number,
-  customRules?: CategoryRule[]
+  customRules?: CategoryRule[],
+  subcategory?: string
 ): SpendingCategory {
   if (amount > 0) return "income";
 
@@ -33,6 +45,12 @@ export function categorizeTransaction(
     if (rule.pattern.test(description)) {
       return rule.category;
     }
+  }
+
+  // Use bank subcategory as a hint when description patterns don't match
+  if (subcategory) {
+    const hint = SUBCATEGORY_HINTS[subcategory.toLowerCase()];
+    if (hint) return hint;
   }
 
   return "other";
