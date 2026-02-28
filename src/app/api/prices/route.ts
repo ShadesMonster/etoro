@@ -85,8 +85,95 @@ export async function GET(req: NextRequest) {
     }
 
     if (action === "pnl") {
-      const data = await etoroFetch("/trading/info/pnl");
-      return NextResponse.json(data);
+      // Try many equity/balance/PnL endpoints
+      const endpoints = [
+        "/trading/info/balance",
+        "/trading/info/credit",
+        "/trading/info/account",
+        "/trading/info/account/balance",
+        "/trading/info/equity",
+        "/trading/info/equity/current",
+        "/trading/info/pnl",
+        "/trading/info/portfolio/summary",
+        "/trading/info/portfolio/overview",
+        "/trading/info/portfolio/value",
+        "/trading/info/portfolio/equity",
+        "/sapi/trade-real/portfolio",
+        "/sapi/trade-real/equity",
+        "/sapi/trade-real/balance",
+        "/sapi/userstats/gain",
+        "/user/portfolio",
+        "/user/info",
+      ];
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const results: { endpoint: string; data: any }[] = [];
+      const errors: { endpoint: string; error: string }[] = [];
+
+      for (const endpoint of endpoints) {
+        try {
+          const data = await etoroFetch(endpoint);
+          console.log(`[eToro API] Endpoint ${endpoint} succeeded:`, JSON.stringify(data).slice(0, 500));
+          results.push({ endpoint, data });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : "unknown";
+          console.log(`[eToro API] Endpoint ${endpoint} failed:`, msg);
+          errors.push({ endpoint, error: msg });
+        }
+      }
+
+      if (results.length > 0) {
+        return NextResponse.json({ results, errors });
+      }
+      return NextResponse.json({ error: "No equity endpoint available", errors }, { status: 404 });
+    }
+
+    if (action === "debug") {
+      // Fetch portfolio and return all field names at every level
+      const data = await etoroFetch("/trading/info/portfolio");
+      const cp = data?.clientPortfolio ?? data;
+
+      // Helper to get keys and types
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const describeObj = (obj: any, maxDepth = 2, depth = 0): any => {
+        if (obj === null || obj === undefined) return null;
+        if (Array.isArray(obj)) {
+          return { _type: "array", _length: obj.length, _sample: obj.length > 0 ? describeObj(obj[0], maxDepth, depth + 1) : null };
+        }
+        if (typeof obj === "object" && depth < maxDepth) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const result: any = {};
+          for (const [key, val] of Object.entries(obj)) {
+            if (typeof val === "number" || typeof val === "string" || typeof val === "boolean" || val === null) {
+              result[key] = val;
+            } else if (Array.isArray(val)) {
+              result[key] = { _type: "array", _length: val.length, _sample: val.length > 0 ? describeObj(val[0], maxDepth, depth + 1) : null };
+            } else if (typeof val === "object") {
+              result[key] = describeObj(val, maxDepth, depth + 1);
+            }
+          }
+          return result;
+        }
+        return typeof obj;
+      };
+
+      const structure = describeObj(cp, 3);
+
+      // Also check top-level response keys (beyond clientPortfolio)
+      const topLevelKeys = Object.keys(data || {});
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const topLevelNumericFields: Record<string, any> = {};
+      for (const key of topLevelKeys) {
+        const val = data[key];
+        if (typeof val === "number") topLevelNumericFields[key] = val;
+        if (typeof val === "string" && !isNaN(Number(val))) topLevelNumericFields[key] = val;
+      }
+
+      return NextResponse.json({
+        topLevelKeys,
+        topLevelNumericFields,
+        clientPortfolioStructure: structure,
+      });
     }
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
