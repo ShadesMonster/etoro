@@ -98,13 +98,43 @@ export function useLivePrices(): UseLivePricesResult {
 
       const data = await res.json();
 
+      // eToro API uses PascalCase field names
+      // Portfolio response may be nested: data.Content.ClientPortfolio or flat
+      // Also handle the P/L endpoint fields
+      const clientPortfolio = data?.Content?.ClientPortfolio ?? data?.ClientPortfolio ?? data;
+
+      // Positions are in the portfolio object
+      const positions = clientPortfolio?.Positions ?? clientPortfolio?.positions ?? data?.Positions ?? data?.positions;
+
+      // Compute total P/L from positions if available
+      let totalPLFromPositions: number | undefined;
+      if (Array.isArray(positions)) {
+        totalPLFromPositions = positions.reduce(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (sum: number, p: any) => sum + (p.NetProfit ?? p.netProfit ?? 0),
+          0
+        );
+      }
+
+      // Net equity = credit + sum of position values
+      let netEquity: number | undefined;
+      const credit = clientPortfolio?.Credit ?? clientPortfolio?.credit ?? data?.Credit ?? data?.credit;
+      if (credit !== undefined && Array.isArray(positions)) {
+        const positionsValue = positions.reduce(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (sum: number, p: any) => sum + (p.Amount ?? p.amount ?? 0) + (p.NetProfit ?? p.netProfit ?? 0),
+          0
+        );
+        netEquity = credit + positionsValue;
+      }
+
       const portfolio: EtoroPortfolio = {
         raw: data,
-        credit: data.credit ?? data.availableBalance ?? data.cash,
-        netEquity: data.netEquity ?? data.equity ?? data.totalValue,
-        totalPL: data.totalPL ?? data.pnl ?? data.profit,
-        totalPLPercent: data.totalPLPercent ?? data.pnlPercent,
-        positions: data.positions ?? data.openPositions ?? data.trades,
+        credit,
+        netEquity: netEquity ?? data?.netEquity ?? data?.equity,
+        totalPL: totalPLFromPositions ?? data?.totalPL ?? data?.TotalPL ?? data?.pnl,
+        totalPLPercent: data?.totalPLPercent ?? data?.TotalPLPercent ?? data?.pnlPercent,
+        positions,
       };
 
       setCachedPortfolio(portfolio);

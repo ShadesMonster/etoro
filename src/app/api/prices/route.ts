@@ -47,7 +47,7 @@ export async function GET(req: NextRequest) {
   try {
     if (action === "portfolio") {
       // Fetch real portfolio - positions, balance, P/L
-      const data = await etoroFetch("/real/portfolio");
+      const data = await etoroFetch("/trading/info/portfolio");
       return NextResponse.json(data, {
         headers: {
           "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60",
@@ -59,8 +59,8 @@ export async function GET(req: NextRequest) {
       // Fetch market rates for instruments
       const instruments = req.nextUrl.searchParams.get("instruments") || "";
       const path = instruments
-        ? `/market-data/rates?instruments=${encodeURIComponent(instruments)}`
-        : "/market-data/rates";
+        ? `/market-data/instruments/rates?instruments=${encodeURIComponent(instruments)}`
+        : "/market-data/instruments/rates";
       const data = await etoroFetch(path);
       return NextResponse.json(data);
     }
@@ -69,18 +69,23 @@ export async function GET(req: NextRequest) {
       const q = req.nextUrl.searchParams.get("q") || "";
       if (!q) return NextResponse.json({ results: [] });
       const data = await etoroFetch(
-        `/market-data/instruments/search?query=${encodeURIComponent(q)}`
+        `/market-data/search?internalSymbolFull=${encodeURIComponent(q)}`
       );
       return NextResponse.json(data);
     }
 
     if (action === "metadata") {
-      const data = await etoroFetch("/market-data/instruments/metadata");
+      const data = await etoroFetch("/market-data/instruments");
       return NextResponse.json(data);
     }
 
     if (action === "history") {
-      const data = await etoroFetch("/real/trading-history");
+      const data = await etoroFetch("/trading/info/trade/history");
+      return NextResponse.json(data);
+    }
+
+    if (action === "pnl") {
+      const data = await etoroFetch("/trading/info/pnl");
       return NextResponse.json(data);
     }
 
@@ -108,39 +113,49 @@ export async function POST(req: NextRequest) {
 
     // Try eToro rates endpoint
     const data = await etoroFetch(
-      `/market-data/rates?instruments=${encodeURIComponent(symbols.join(","))}`
+      `/market-data/instruments/rates?instruments=${encodeURIComponent(symbols.join(","))}`
     );
 
     // Transform eToro response to our price format
+    // eToro uses PascalCase: InstrumentID, Ask, Bid, LastExecution
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const prices: Record<string, any> = {};
     if (Array.isArray(data)) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       for (const item of data as any[]) {
-        const symbol = item.instrumentId || item.symbol || item.name;
+        const symbol = item.InstrumentID ?? item.instrumentId ?? item.symbol ?? item.name;
         if (symbol) {
           prices[symbol] = {
-            price: item.lastPrice ?? item.ask ?? item.bid ?? 0,
-            change: item.change ?? 0,
-            changePercent: item.changePercent ?? item.dailyChangePercent ?? 0,
-            currency: item.currency ?? "USD",
-            name: item.instrumentName ?? item.name ?? symbol,
+            price: item.LastExecution ?? item.Ask ?? item.Bid ?? item.lastPrice ?? item.ask ?? item.bid ?? 0,
+            change: item.Change ?? item.change ?? 0,
+            changePercent: item.ChangePercent ?? item.changePercent ?? 0,
+            currency: item.Currency ?? item.currency ?? "USD",
+            name: item.InstrumentName ?? item.instrumentName ?? item.name ?? symbol,
           };
         }
       }
-    } else if (data && typeof data === "object") {
+    } else if (data && typeof data === "object" && !data.InstrumentID) {
       // Handle if response is keyed by instrument
       for (const [key, val] of Object.entries(data)) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const item = val as any;
         prices[key] = {
-          price: item.lastPrice ?? item.ask ?? item.bid ?? 0,
-          change: item.change ?? 0,
-          changePercent: item.changePercent ?? item.dailyChangePercent ?? 0,
-          currency: item.currency ?? "USD",
-          name: item.instrumentName ?? item.name ?? key,
+          price: item.LastExecution ?? item.Ask ?? item.Bid ?? item.lastPrice ?? item.ask ?? item.bid ?? 0,
+          change: item.Change ?? item.change ?? 0,
+          changePercent: item.ChangePercent ?? item.changePercent ?? 0,
+          currency: item.Currency ?? item.currency ?? "USD",
+          name: item.InstrumentName ?? item.instrumentName ?? item.name ?? key,
         };
       }
+    } else if (data && data.InstrumentID) {
+      // Single rate object
+      prices[data.InstrumentID] = {
+        price: data.LastExecution ?? data.Ask ?? data.Bid ?? 0,
+        change: data.Change ?? 0,
+        changePercent: data.ChangePercent ?? 0,
+        currency: data.Currency ?? "USD",
+        name: data.InstrumentName ?? String(data.InstrumentID),
+      };
     }
 
     return NextResponse.json({ prices });
