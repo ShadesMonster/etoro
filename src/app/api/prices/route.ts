@@ -38,8 +38,37 @@ async function etoroFetch(path: string): Promise<any> {
   return res.json();
 }
 
+// In-memory cache for instrument metadata (large response, changes rarely)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let instrumentCache: { data: Record<number, string>; timestamp: number } | null = null;
+const INSTRUMENT_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+async function getInstrumentNames(): Promise<Record<number, string>> {
+  if (instrumentCache && Date.now() - instrumentCache.timestamp < INSTRUMENT_CACHE_TTL) {
+    return instrumentCache.data;
+  }
+
+  const metadataData = await etoroFetch("/market-data/instruments");
+  const names: Record<number, string> = {};
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const instruments: any[] = metadataData?.instruments ?? metadataData?.Instruments ??
+    (Array.isArray(metadataData) ? metadataData : []);
+
+  for (const inst of instruments) {
+    const id = inst.instrumentID ?? inst.InstrumentID;
+    const name = inst.instrumentDisplayName ?? inst.InstrumentDisplayName ??
+      inst.symbolFull ?? inst.SymbolFull ?? inst.name ?? inst.Name;
+    if (id !== undefined && name) names[id] = name;
+  }
+
+  instrumentCache = { data: names, timestamp: Date.now() };
+  return names;
+}
+
 // GET /api/prices?action=portfolio  - fetch full portfolio from eToro
 // GET /api/prices?action=rates      - fetch market rates
+// GET /api/prices?action=sync       - full sync: positions + history + instrument names
 // GET /api/prices?action=search&q=  - search instruments
 // GET /api/prices?action=metadata   - list all instruments
 // GET /api/prices?action=history    - trade history
@@ -84,6 +113,129 @@ export async function GET(req: NextRequest) {
     if (action === "history") {
       const data = await etoroFetch("/trading/info/trade/history");
       return NextResponse.json(data);
+    }
+
+    if (action === "sync") {
+      // Full sync: fetch portfolio + rates + history + instrument names in parallel
+      const [portfolioData, ratesData, historyData, instrumentNames] = await Promise.all([
+        etoroFetch("/trading/info/portfolio"),
+        etoroFetch("/market-data/instruments/rates").catch(() => null),
+        etoroFetch("/trading/info/trade/history").catch(() => null),
+        getInstrumentNames().catch(() => ({} as Record<number, string>)),
+      ]);
+
+      const getName = (id: number) => instrumentNames[id] ?? `Instrument ${id}`;
+
+      // Build rates map for current prices
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ratesMap: Record<number, any> = {};
+      if (ratesData) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ratesArr: any[] = ratesData?.rates ?? (Array.isArray(ratesData) ? ratesData : []);
+        for (const r of ratesArr) {
+          const id = r.instrumentID ?? r.InstrumentID;
+          if (id !== undefined) ratesMap[id] = r;
+        }
+      }
+
+      // === OPEN POSITIONS from portfolio ===
+      const cp = portfolioData?.clientPortfolio ?? portfolioData;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const allOpen: any[] = [...(cp?.positions ?? [])];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const m of (cp?.mirrors ?? []) as any[]) {
+        if (Array.isArray(m.positions)) allOpen.push(...m.positions);
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const openPositions = allOpen.map((pos: any) => {
+        const rate = ratesMap[pos.instrumentID];
+        const currentPrice = rate
+          ? (pos.isBuy ? (rate.bid ?? rate.Bid ?? 0) : (rate.ask ?? rate.Ask ?? 0))
+          : 0;
+        const direction = pos.isBuy ? 1 : -1;
+        const convRate = pos.openConversionRate ?? 1;
+        const upl = currentPrice > 0
+          ? direction * pos.units * (currentPrice - (pos.openRate ?? 0)) * convRate
+          : 0;
+        const profit = upl + (pos.totalFees ?? 0);
+        const amount = pos.amount ?? 0;
+        const profitPercent = amount > 0 ? (profit / amount) * 100 : 0;
+
+        return {
+          id: `api:open:${pos.positionID}`,
+          instrument: getName(pos.instrumentID),
+          units: pos.units ?? 0,
+          openRate: pos.openRate ?? 0,
+          currentRate: currentPrice,
+          profit,
+          profitPercent,
+          openDate: pos.openDateTime ?? "",
+          type: pos.isBuy ? "buy" : "sell",
+          status: "open",
+          positionId: String(pos.positionID ?? ""),
+          amount,
+          leverage: pos.leverage ?? 1,
+        };
+      });
+
+      // === CLOSED POSITIONS from trade history ===
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let closedRaw: any[] = [];
+      if (historyData) {
+        // Handle various response shapes
+        const candidates = [
+          historyData.closedPositions,
+          historyData.publicHistoryPositions,
+          historyData.positions,
+          historyData.trades,
+          historyData.history,
+          Array.isArray(historyData) ? historyData : null,
+        ];
+        for (const c of candidates) {
+          if (Array.isArray(c) && c.length > 0) {
+            closedRaw = c;
+            break;
+          }
+        }
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const closedPositions = closedRaw.map((pos: any) => {
+        const profit = pos.netProfit ?? pos.profit ?? pos.realizedPL ?? 0;
+        const amount = pos.amount ?? pos.investedAmount ?? 0;
+        const profitPercent = amount > 0 ? (profit / amount) * 100 : 0;
+
+        return {
+          id: `api:closed:${pos.positionID ?? pos.tradeID ?? Math.random().toString(36).slice(2)}`,
+          instrument: getName(pos.instrumentID),
+          units: pos.units ?? 0,
+          openRate: pos.openRate ?? 0,
+          currentRate: pos.closeRate ?? pos.closedRate ?? 0,
+          profit,
+          profitPercent,
+          openDate: pos.openDateTime ?? "",
+          closeDate: pos.closeDateTime ?? pos.closedDateTime ?? "",
+          type: pos.isBuy ? "buy" : "sell",
+          status: "closed",
+          positionId: String(pos.positionID ?? ""),
+          amount,
+          leverage: pos.leverage ?? 1,
+        };
+      });
+
+      console.log("[eToro Sync]", {
+        instruments: Object.keys(instrumentNames).length,
+        open: openPositions.length,
+        closed: closedPositions.length,
+        historyKeys: historyData ? Object.keys(historyData) : null,
+      });
+
+      return NextResponse.json({
+        openPositions,
+        closedPositions,
+        instrumentCount: Object.keys(instrumentNames).length,
+      });
     }
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });

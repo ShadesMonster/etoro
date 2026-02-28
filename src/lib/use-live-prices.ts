@@ -121,8 +121,8 @@ export function useLivePrices(): UseLivePricesResult {
       // positionEquity = amount + direction * units * (currentPrice - openRate) * openConversionRate
       // openConversionRate converts from instrument currency to USD
       // (e.g. 1.0 for USD instruments, ~0.0137 for GBP pence instruments)
-      let netEquity: number | undefined;
-      let totalPL: number | undefined;
+      let netEquity = 0;
+      let totalPL = 0;
       let totalPLPercent: number | undefined;
 
       const ratesRes = await fetch("/api/prices?action=rates").catch(() => null);

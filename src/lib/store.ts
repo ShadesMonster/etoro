@@ -109,6 +109,7 @@ interface FinanceStore {
   etoroTransactions: EtoroTransaction[];
   etoroDividends: EtoroDividend[];
   addEtoroPositions: (positions: EtoroPosition[]) => void;
+  setApiEtoroPositions: (positions: EtoroPosition[]) => void;
   addEtoroTransactions: (txs: EtoroTransaction[]) => void;
   addEtoroDividends: (dividends: EtoroDividend[]) => void;
   clearEtoro: () => void;
@@ -171,6 +172,10 @@ export const useFinanceStore = create<FinanceStore>()(
       etoroDividends: [],
       addEtoroPositions: (p) =>
         set((s) => ({ etoroPositions: dedup([...s.etoroPositions, ...p]) })),
+      setApiEtoroPositions: (p) =>
+        set((s) => ({
+          etoroPositions: [...s.etoroPositions.filter((pos) => !pos.id.startsWith("api:")), ...p],
+        })),
       addEtoroTransactions: (txs) =>
         set((s) => ({ etoroTransactions: dedup([...s.etoroTransactions, ...txs]) })),
       addEtoroDividends: (divs) =>

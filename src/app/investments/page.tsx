@@ -21,6 +21,7 @@ import { formatCurrency, formatDate, formatPercent } from "@/lib/utils";
 import StatCard from "@/components/StatCard";
 import Pagination from "@/components/Pagination";
 import { useLivePrices } from "@/lib/use-live-prices";
+import { useEtoroSync } from "@/lib/use-etoro-sync";
 
 const COLORS = [
   "#6366f1", "#22c55e", "#f97316", "#ec4899", "#14b8a6",
@@ -36,10 +37,13 @@ export default function InvestmentsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [txPage, setTxPage] = useState(1);
 
-  const hasData = etoroPositions.length > 0 || etoroTransactions.length > 0 || etoroDividends.length > 0;
-
   // Live data from eToro API
   const { prices: livePrices, etoroPortfolio, unmapped, loading: pricesLoading, error: pricesError, lastUpdated, fetchPrices, fetchPortfolio } = useLivePrices();
+
+  // Auto-sync positions from eToro API (replaces need for CSV upload)
+  const { sync: syncPositions, syncing, syncError, lastSynced } = useEtoroSync();
+
+  const hasData = etoroPositions.length > 0 || etoroTransactions.length > 0 || etoroDividends.length > 0 || etoroPortfolio?.connected === true;
 
   // Filter positions by status
   const filteredPositions = useMemo(() => {
@@ -142,16 +146,18 @@ export default function InvestmentsPage() {
   const handleRefreshPrices = useCallback(() => {
     // Skip cache on manual refresh so we always hit the API
     fetchPortfolio(true);
-  }, [fetchPortfolio]);
+    syncPositions(true);
+  }, [fetchPortfolio, syncPositions]);
 
-  // Fetch portfolio on first load
+  // Auto-fetch portfolio value + sync positions on first load
   const [hasFetchedOnce, setHasFetchedOnce] = useState(false);
   useEffect(() => {
-    if (!hasFetchedOnce && hasData) {
+    if (!hasFetchedOnce) {
       setHasFetchedOnce(true);
-      fetchPortfolio();
+      fetchPortfolio();       // Fast: portfolio value + rates
+      syncPositions();         // Background: positions + history + instrument names
     }
-  }, [hasFetchedOnce, hasData, fetchPortfolio]);
+  }, [hasFetchedOnce, fetchPortfolio, syncPositions]);
 
   // Use CSV open positions if available, otherwise use derived ones
   const hasOpenFromCSV = openPositionsFromCSV.length > 0;
@@ -340,16 +346,22 @@ export default function InvestmentsPage() {
     [etoroTransactions, txPage]
   );
 
-  if (!hasData) {
+  if (!hasData && !pricesLoading && !syncing) {
     return (
       <div className="text-center py-20">
         <h1 className="text-2xl font-bold text-white mb-3">Investments</h1>
         <p className="text-[var(--muted)] mb-6">
-          No eToro data imported yet. Upload your account statement CSV.
+          No eToro data yet. Configure API keys in .env.local for live data,
+          or upload your account statement CSV.
         </p>
-        <Link href="/upload" className="btn-primary inline-block">
-          Upload CSV
-        </Link>
+        <div className="flex gap-3 justify-center">
+          <button onClick={() => { fetchPortfolio(); syncPositions(true); }} className="btn-primary inline-block">
+            Connect to eToro API
+          </button>
+          <Link href="/upload" className="btn-primary inline-block opacity-70">
+            Upload CSV
+          </Link>
+        </div>
       </div>
     );
   }
@@ -391,18 +403,19 @@ export default function InvestmentsPage() {
         <span className={pricesError ? "text-red-400" : pricesLoading ? "text-yellow-400" : portfolio.hasApiData ? "text-green-400" : "text-gray-400"}>
           {pricesError
             ? `eToro API error: ${pricesError}`
-            : pricesLoading
+            : pricesLoading || syncing
               ? "Connecting to eToro API..."
               : portfolio.hasApiData
-                ? `eToro API connected · Updated ${lastUpdated?.toLocaleTimeString() ?? ""}`
+                ? `eToro API connected · Updated ${lastUpdated?.toLocaleTimeString() ?? ""}${lastSynced ? ` · Synced ${lastSynced.toLocaleTimeString()}` : ""}`
                 : "eToro API not connected"}
+          {syncError && !pricesError && <span className="text-red-400 ml-2">Sync: {syncError}</span>}
         </span>
         <button
           onClick={handleRefreshPrices}
-          disabled={pricesLoading}
+          disabled={pricesLoading || syncing}
           className="ml-auto text-xs text-[var(--muted)] hover:text-white underline disabled:opacity-50"
         >
-          {pricesError ? "Retry" : pricesLoading ? "Connecting..." : portfolio.hasApiData ? "Refresh" : "Test Connection"}
+          {pricesError ? "Retry" : pricesLoading || syncing ? "Syncing..." : portfolio.hasApiData ? "Refresh" : "Test Connection"}
         </button>
       </div>
 
