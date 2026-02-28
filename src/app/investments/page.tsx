@@ -221,20 +221,26 @@ export default function InvestmentsPage() {
     }
 
     // Use eToro API data if available (exact values), otherwise estimate
+    const hasApiData = etoroPortfolio?.connected === true;
     const apiEquity = etoroPortfolio?.netEquity;
     const apiPL = etoroPortfolio?.totalPL;
+    const apiPLPercent = etoroPortfolio?.totalPLPercent;
+    const apiDeposited = etoroPortfolio?.depositSummary;
 
     const estimatedValue = apiEquity ?? (netInvested + realizedPL + totalDividends + unrealizedPL);
     const totalPL = apiPL ?? (realizedPL + unrealizedPL + totalDividends);
-    const plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
-    const hasApiData = etoroPortfolio?.connected === true;
+    // Use API P/L% if available, or compute from API deposited, or from CSV deposits
+    const effectiveDeposited = apiDeposited ?? netInvested;
+    const plPercent = apiPLPercent ?? (effectiveDeposited > 0 ? (totalPL / effectiveDeposited) * 100 : 0);
 
     // Estimated cash = portfolio value - open positions value
-    const estimatedCash = estimatedValue - openValue;
+    const estimatedCash = hasApiData
+      ? (etoroPortfolio?.credit ?? 0)
+      : estimatedValue - openValue;
 
     return {
       estimatedValue,
-      netInvested,
+      netInvested: hasApiData ? (apiDeposited ?? netInvested) : netInvested,
       deposits,
       withdrawals,
       realizedPL,
