@@ -649,55 +649,66 @@ export default function InvestmentsPage() {
         </div>
 
         {/* Portfolio allocation */}
-        <div className="card">
+        <div className="card flex flex-col">
           <h2 className="text-lg font-semibold text-white mb-4">
             {portfolio.hasOpenPositions ? "Current Holdings Allocation" : "Capital Allocation by Instrument"}
           </h2>
           {stats.allocation.length > 0 ? (
-            <ResponsiveContainer width="100%" height={400}>
-              <PieChart>
-                <Pie
-                  data={stats.allocation}
-                  cx="50%"
-                  cy="45%"
-                  outerRadius={90}
-                  innerRadius={45}
-                  dataKey="value"
-                  paddingAngle={2}
-                  fontSize={11}
-                >
-                  {stats.allocation.map((_, index) => (
-                    <Cell
-                      key={index}
-                      fill={COLORS[index % COLORS.length]}
+            <div className="flex-1 flex flex-col lg:flex-row items-center gap-4 min-h-0">
+              {/* Donut chart */}
+              <div className="flex-shrink-0" style={{ width: 220, height: 220 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={stats.allocation}
+                      cx="50%"
+                      cy="50%"
+                      outerRadius={100}
+                      innerRadius={55}
+                      dataKey="value"
+                      paddingAngle={2}
+                    >
+                      {stats.allocation.map((_, index) => (
+                        <Cell
+                          key={index}
+                          fill={COLORS[index % COLORS.length]}
+                        />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={{
+                        background: "#1e1e2e",
+                        border: "1px solid #2e2e3e",
+                        borderRadius: 8,
+                        color: "#e5e7eb",
+                      }}
+                      formatter={(value) => formatCurrency(Number(value), "USD")}
                     />
-                  ))}
-                </Pie>
-                <Tooltip
-                  contentStyle={{
-                    background: "#1e1e2e",
-                    border: "1px solid #2e2e3e",
-                    borderRadius: 8,
-                    color: "#e5e7eb",
-                  }}
-                  formatter={(value) => formatCurrency(Number(value), "USD")}
-                />
-                <Legend
-                  layout="horizontal"
-                  verticalAlign="bottom"
-                  align="center"
-                  iconType="circle"
-                  iconSize={8}
-                  wrapperStyle={{ fontSize: 11, color: "#9ca3af" }}
-                  formatter={(value) => {
-                    const item = stats.allocation.find((a) => a.name === value);
-                    const total = stats.allocation.reduce((s, a) => s + a.value, 0);
-                    const pct = item && total > 0 ? ((item.value / total) * 100).toFixed(0) : "0";
-                    return `${value} (${pct}%)`;
-                  }}
-                />
-              </PieChart>
-            </ResponsiveContainer>
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              {/* Legend list */}
+              <div className="flex flex-col gap-2 text-sm min-w-0 flex-1">
+                {stats.allocation.map((item, index) => {
+                  const total = stats.allocation.reduce((s, a) => s + a.value, 0);
+                  const pct = total > 0 ? ((item.value / total) * 100).toFixed(1) : "0";
+                  return (
+                    <div key={item.name} className="flex items-center gap-2">
+                      <span
+                        className="flex-shrink-0 w-3 h-3 rounded-full"
+                        style={{ background: COLORS[index % COLORS.length] }}
+                      />
+                      <span className="text-[var(--muted)] truncate" title={item.name}>
+                        {item.name}
+                      </span>
+                      <span className="ml-auto flex-shrink-0 text-white font-medium">
+                        {pct}%
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           ) : (
             <p className="text-[var(--muted)] text-sm">No data.</p>
           )}
