@@ -75,7 +75,7 @@ export default function Dashboard() {
     const bankBalanceGBP = latestTx?.balance ?? 0;
     const bankBalance = convertCurrency(bankBalanceGBP, "GBP", cur, rates);
 
-    // Investment value: estimate from deposits - withdrawals + realized P/L + dividends
+    // Investment value: deposits - withdrawals + realized P/L + dividends + unrealized P/L
     const openEtoroPositions = etoroPositions.filter((p) => (p.status || "closed") === "open");
     const closedPL = etoroPositions
       .filter((p) => (p.status || "closed") === "closed")
@@ -93,23 +93,20 @@ export default function Dashboard() {
           .filter((tx) => tx.type.toLowerCase().includes("dividend") || tx.detail.toLowerCase().includes("dividend"))
           .reduce((s, tx) => s + tx.amount, 0);
 
+    // Unrealized P/L from open positions (only if we have full position data with prices)
+    const unrealizedPL = openEtoroPositions.reduce((sum, p) => sum + p.profit, 0);
+
     let investmentValueUSD: number;
-    if (openEtoroPositions.length > 0) {
-      const openValue = openEtoroPositions.reduce((sum, p) => sum + p.units * p.currentRate, 0);
-      const openCost = openEtoroPositions.reduce((sum, p) => sum + p.units * p.openRate, 0);
-      investmentValueUSD = openValue + (etoroNetInvested - openCost + closedPL + etoroDivTotal);
-    } else if (etoroNetInvested > 0) {
-      investmentValueUSD = etoroNetInvested + closedPL + etoroDivTotal;
+    if (etoroNetInvested > 0) {
+      // Best estimate: net deposits + all P/L + dividends
+      investmentValueUSD = etoroNetInvested + closedPL + etoroDivTotal + unrealizedPL;
     } else if (etoroPositions.length > 0) {
       // No transaction data - rough fallback from positions only
       investmentValueUSD = etoroPositions.reduce((sum, p) => sum + p.units * p.currentRate, 0);
     } else {
       investmentValueUSD = 0;
     }
-    const investmentProfitUSD = closedPL + etoroDivTotal +
-      (openEtoroPositions.length > 0
-        ? openEtoroPositions.reduce((sum, p) => sum + p.profit, 0)
-        : 0);
+    const investmentProfitUSD = closedPL + etoroDivTotal + unrealizedPL;
     const investmentValue = convertCurrency(investmentValueUSD, "USD", cur, rates);
     const investmentProfit = convertCurrency(investmentProfitUSD, "USD", cur, rates);
 

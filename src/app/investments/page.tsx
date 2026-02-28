@@ -96,11 +96,45 @@ export default function InvestmentsPage() {
     };
   }, [etoroDividends, etoroTransactions]);
 
-  // Open positions (actual current holdings)
-  const openPositions = useMemo(
+  // Open positions from the positions CSV (if uploaded)
+  const openPositionsFromCSV = useMemo(
     () => etoroPositions.filter((p) => (p.status || "closed") === "open"),
     [etoroPositions]
   );
+
+  // Derive currently-open positions from transactions:
+  // "Open Position" entries without a matching "Position closed" by positionId
+  const derivedOpenPositions = useMemo(() => {
+    if (etoroTransactions.length === 0) return [];
+
+    const openedByPosId: Record<string, { instrument: string; amount: number; date: string }> = {};
+    const closedPosIds = new Set<string>();
+
+    for (const tx of etoroTransactions) {
+      const type = tx.type.toLowerCase().trim();
+      if (type === "open position" && tx.positionId) {
+        openedByPosId[tx.positionId] = {
+          instrument: tx.detail || "Unknown",
+          amount: Math.abs(tx.amount),
+          date: tx.date,
+        };
+      } else if (type === "position closed" && tx.positionId) {
+        closedPosIds.add(tx.positionId);
+      }
+    }
+
+    // Positions that were opened but never closed = currently open
+    return Object.entries(openedByPosId)
+      .filter(([posId]) => !closedPosIds.has(posId))
+      .map(([posId, data]) => ({ positionId: posId, ...data }));
+  }, [etoroTransactions]);
+
+  // Use CSV open positions if available, otherwise use derived ones
+  const hasOpenFromCSV = openPositionsFromCSV.length > 0;
+  const openPositionCount = hasOpenFromCSV ? openPositionsFromCSV.length : derivedOpenPositions.length;
+  const openPositionsCostBasis = hasOpenFromCSV
+    ? openPositionsFromCSV.reduce((sum, p) => sum + p.units * p.openRate, 0)
+    : derivedOpenPositions.reduce((sum, p) => sum + p.amount, 0);
 
   // Derive portfolio metrics from all available data
   const portfolio = useMemo(() => {
@@ -125,28 +159,31 @@ export default function InvestmentsPage() {
           .filter((tx) => tx.type.toLowerCase().includes("dividend") || tx.detail.toLowerCase().includes("dividend"))
           .reduce((s, tx) => s + tx.amount, 0);
 
-    // Open positions value (if any)
-    const openValue = openPositions.reduce(
-      (sum, p) => sum + p.units * p.currentRate, 0
-    );
-    const openCost = openPositions.reduce(
-      (sum, p) => sum + p.units * p.openRate, 0
-    );
-    const unrealizedPL = openValue - openCost;
+    // Open positions value
+    let openValue: number;
+    let unrealizedPL: number;
+    if (hasOpenFromCSV) {
+      // Have full open position data with current prices
+      openValue = openPositionsFromCSV.reduce((sum, p) => sum + p.units * p.currentRate, 0);
+      unrealizedPL = openValue - openPositionsCostBasis;
+    } else {
+      // Only know cost basis from transactions - can't know unrealized P/L
+      openValue = openPositionsCostBasis;
+      unrealizedPL = 0;
+    }
 
-    // Estimated portfolio value:
-    // If we have open positions, use: open positions value + cash
-    // Otherwise estimate from: deposits - withdrawals + realized P/L + dividends
-    // This matches eToro's "Cash and Holdings" concept
-    const estimatedValue = openPositions.length > 0
-      ? openValue + (netInvested - openCost + realizedPL + totalDividends) // open holdings + estimated cash
-      : netInvested + realizedPL + totalDividends;
+    // Estimated portfolio value = net deposits + realized P/L + dividends + unrealized P/L
+    // This equals: cash balance + open positions value (matching eToro's "Cash and Holdings")
+    const estimatedValue = netInvested + realizedPL + totalDividends + unrealizedPL;
 
-    // Total P/L = realized + unrealized (matching eToro)
+    // Total P/L = realized + unrealized + dividends
     const totalPL = realizedPL + unrealizedPL + totalDividends;
 
     // P/L % based on net invested (how eToro calculates it)
     const plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
+
+    // Estimated cash = portfolio value - open positions value
+    const estimatedCash = estimatedValue - openValue;
 
     return {
       estimatedValue,
@@ -159,10 +196,12 @@ export default function InvestmentsPage() {
       totalPL,
       plPercent,
       openValue,
-      hasOpenPositions: openPositions.length > 0,
+      estimatedCash,
+      hasOpenPositions: openPositionCount > 0,
+      hasOpenFromCSV,
       hasTransactions: etoroTransactions.length > 0,
     };
-  }, [etoroPositions, etoroTransactions, etoroDividends, openPositions]);
+  }, [etoroPositions, etoroTransactions, etoroDividends, openPositionsFromCSV, hasOpenFromCSV, openPositionsCostBasis, openPositionCount]);
 
   const stats = useMemo(() => {
     // P/L and win/loss from the filtered set (respects all/open/closed filter)
@@ -170,15 +209,25 @@ export default function InvestmentsPage() {
     const winners = filteredPositions.filter((p) => p.profit > 0).length;
     const losers = filteredPositions.filter((p) => p.profit < 0).length;
 
-    // Allocation: open positions if available, otherwise aggregate closed by instrument
+    // Allocation: prefer open positions from CSV, then derived from txs, then closed positions
     let allocation: { name: string; value: number }[];
-    if (openPositions.length > 0) {
-      allocation = openPositions.map((p) => ({
+    if (hasOpenFromCSV) {
+      allocation = openPositionsFromCSV.map((p) => ({
         name: p.instrument,
         value: Math.round(p.units * p.currentRate * 100) / 100,
       }));
+    } else if (derivedOpenPositions.length > 0) {
+      // Aggregate derived open positions by instrument (at cost basis)
+      const byInstrument: Record<string, number> = {};
+      for (const p of derivedOpenPositions) {
+        byInstrument[p.instrument] = (byInstrument[p.instrument] || 0) + p.amount;
+      }
+      allocation = Object.entries(byInstrument)
+        .map(([name, value]) => ({ name, value: Math.round(value * 100) / 100 }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 15);
     } else {
-      // Aggregate amount traded by instrument for closed positions
+      // Fallback: aggregate closed positions by instrument
       const byInstrument: Record<string, number> = {};
       for (const p of filteredPositions) {
         const amt = p.amount || p.units * p.openRate;
@@ -210,7 +259,7 @@ export default function InvestmentsPage() {
       allocation,
       plData,
     };
-  }, [filteredPositions, openPositions]);
+  }, [filteredPositions, openPositionsFromCSV, derivedOpenPositions, hasOpenFromCSV]);
 
   // Account balance over time (from transactions)
   const balanceOverTime = useMemo(() => {
@@ -279,11 +328,15 @@ export default function InvestmentsPage() {
         <StatCard
           label="Portfolio Value"
           value={formatCurrency(portfolio.estimatedValue, "USD")}
-          subtitle={portfolio.hasOpenPositions
-            ? `${openPositions.length} open positions`
-            : portfolio.hasTransactions
-              ? "Estimated from transactions"
-              : "Upload transactions for accuracy"}
+          subtitle={
+            portfolio.hasOpenFromCSV
+              ? `${openPositionCount} open positions`
+              : portfolio.hasOpenPositions
+                ? `${openPositionCount} open (at cost basis)`
+                : portfolio.hasTransactions
+                  ? "From transactions"
+                  : "Upload transactions for accuracy"
+          }
         />
         <StatCard
           label="Net Invested"
@@ -301,7 +354,7 @@ export default function InvestmentsPage() {
         <StatCard
           label="Win / Loss"
           value={`${stats.winners} / ${stats.losers}`}
-          subtitle={`${filteredPositions.length} trades`}
+          subtitle={`${filteredPositions.length} closed trades`}
         />
         <StatCard
           label="Dividends"
@@ -311,23 +364,46 @@ export default function InvestmentsPage() {
         />
       </div>
 
-      {/* Upload prompt if missing open positions */}
-      {!portfolio.hasOpenPositions && etoroPositions.length > 0 && (
-        <div className="card border border-[var(--accent)]/30 bg-[var(--accent)]/5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-white font-medium">
-                Portfolio value is estimated from closed trades + deposits
-              </p>
-              <p className="text-xs text-[var(--muted)] mt-1">
-                For exact numbers matching eToro, upload your Open Positions CSV from your eToro account statement.
-                The estimated value ({formatCurrency(portfolio.estimatedValue, "USD")}) excludes unrealized gains/losses on current holdings.
-              </p>
-            </div>
-            <Link href="/upload" className="btn-primary text-sm whitespace-nowrap ml-4">
-              Upload
-            </Link>
+      {/* Open positions derived from transactions */}
+      {!portfolio.hasOpenFromCSV && derivedOpenPositions.length > 0 && (
+        <div className="card">
+          <h2 className="text-lg font-semibold text-white mb-3">
+            Current Holdings ({derivedOpenPositions.length} open positions)
+          </h2>
+          <p className="text-xs text-[var(--muted)] mb-3">
+            Derived from account activity. Values shown at cost basis (no live prices without eToro API).
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[var(--muted)] border-b border-[var(--card-border)]">
+                  <th className="pb-2 pr-4">Instrument</th>
+                  <th className="pb-2 pr-4 text-right">Amount Invested</th>
+                  <th className="pb-2 text-right">Date Opened</th>
+                </tr>
+              </thead>
+              <tbody>
+                {derivedOpenPositions
+                  .sort((a, b) => b.amount - a.amount)
+                  .slice(0, 50)
+                  .map((p) => (
+                    <tr
+                      key={p.positionId}
+                      className="border-b border-[var(--card-border)]/50 hover:bg-white/5"
+                    >
+                      <td className="py-2 pr-4 text-white font-medium">{p.instrument}</td>
+                      <td className="py-2 pr-4 text-right">{formatCurrency(p.amount, "USD")}</td>
+                      <td className="py-2 text-right text-[var(--muted)]">{formatDate(p.date)}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
           </div>
+          {derivedOpenPositions.length > 50 && (
+            <p className="text-xs text-[var(--muted)] mt-2">
+              Showing top 50 of {derivedOpenPositions.length} open positions by value.
+            </p>
+          )}
         </div>
       )}
 
@@ -418,7 +494,7 @@ export default function InvestmentsPage() {
         {/* Portfolio allocation */}
         <div className="card">
           <h2 className="text-lg font-semibold text-white mb-4">
-            {portfolio.hasOpenPositions ? "Portfolio Allocation" : "Capital Allocation by Instrument"}
+            {portfolio.hasOpenPositions ? "Current Holdings Allocation" : "Capital Allocation by Instrument"}
           </h2>
           {stats.allocation.length > 0 ? (
             <ResponsiveContainer width="100%" height={350}>
