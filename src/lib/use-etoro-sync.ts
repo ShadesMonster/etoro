@@ -98,7 +98,7 @@ export function useEtoroSync() {
       try { localStorage.setItem(SYNC_TS_KEY, String(now)); } catch {}
       setLastSynced(new Date(now));
 
-      console.log(`[eToro Sync] Stored ${positions.length} positions (${data.openPositions?.length ?? 0} open, ${data.closedPositions?.length ?? 0} closed)`);
+      console.log(`[eToro Sync] Stored ${positions.length} positions (${data.openPositions?.length ?? 0} open, ${data.closedPositions?.length ?? 0} closed, ${data.instrumentCount ?? 0} instruments, ${data.unresolved ?? 0} unresolved)`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Sync failed";
       console.error("[eToro Sync] Error:", msg);

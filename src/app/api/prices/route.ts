@@ -51,9 +51,35 @@ async function getInstrumentNames(): Promise<Record<number, string>> {
   const metadataData = await etoroFetch("/market-data/instruments");
   const names: Record<number, string> = {};
 
+  // eToro metadata can be nested in various ways:
+  // { InstrumentDisplayDatas: [...] } or { instruments: [...] } or just [...]
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const instruments: any[] = metadataData?.instruments ?? metadataData?.Instruments ??
-    (Array.isArray(metadataData) ? metadataData : []);
+  const candidates: any[] = [
+    metadataData?.InstrumentDisplayDatas,
+    metadataData?.instrumentDisplayDatas,
+    metadataData?.instruments,
+    metadataData?.Instruments,
+    Array.isArray(metadataData) ? metadataData : null,
+  ];
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let instruments: any[] = [];
+  for (const c of candidates) {
+    if (Array.isArray(c) && c.length > 0) {
+      instruments = c;
+      break;
+    }
+  }
+
+  // If still empty, try all array values in the response
+  if (instruments.length === 0 && metadataData && typeof metadataData === "object") {
+    for (const val of Object.values(metadataData)) {
+      if (Array.isArray(val) && val.length > 0) {
+        instruments = val;
+        break;
+      }
+    }
+  }
 
   for (const inst of instruments) {
     const id = inst.instrumentID ?? inst.InstrumentID;
@@ -61,6 +87,9 @@ async function getInstrumentNames(): Promise<Record<number, string>> {
       inst.symbolFull ?? inst.SymbolFull ?? inst.name ?? inst.Name;
     if (id !== undefined && name) names[id] = name;
   }
+
+  console.log(`[eToro Metadata] Resolved ${Object.keys(names).length} instrument names` +
+    (instruments.length === 0 ? ` (response keys: ${Object.keys(metadataData || {}).join(", ")})` : ""));
 
   instrumentCache = { data: names, timestamp: Date.now() };
   return names;
@@ -246,6 +275,7 @@ export async function GET(req: NextRequest) {
         openPositions,
         closedPositions,
         instrumentCount: Object.keys(instrumentNames).length,
+        unresolved,
       });
     }
 
