@@ -32,10 +32,22 @@ const PAGE_SIZE = 25;
 
 type StatusFilter = "all" | "open" | "closed";
 
+/** UK financial year: April–March. e.g. June 2025 → "25/26", Feb 2026 → "25/26" */
+function getFinancialYear(dateStr: string): string {
+  const d = new Date(dateStr);
+  const month = d.getMonth(); // 0-indexed
+  const year = d.getFullYear();
+  if (month >= 3) {
+    return `${(year % 100).toString().padStart(2, "0")}/${((year + 1) % 100).toString().padStart(2, "0")}`;
+  }
+  return `${((year - 1) % 100).toString().padStart(2, "0")}/${(year % 100).toString().padStart(2, "0")}`;
+}
+
 export default function InvestmentsPage() {
   const { etoroPositions, etoroTransactions, etoroDividends } = useFinanceStore();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [txPage, setTxPage] = useState(1);
+  const [selectedYears, setSelectedYears] = useState<Set<string>>(new Set());
 
   // Live data from eToro API
   const { prices: livePrices, etoroPortfolio, unmapped, loading: pricesLoading, error: pricesError, lastUpdated, fetchPrices, fetchPortfolio } = useLivePrices();
@@ -45,11 +57,47 @@ export default function InvestmentsPage() {
 
   const hasData = etoroPositions.length > 0 || etoroTransactions.length > 0 || etoroDividends.length > 0 || etoroPortfolio?.connected === true;
 
-  // Filter positions by status
+  // Available financial years from position data
+  const availableYears = useMemo(() => {
+    const years = new Set<string>();
+    for (const p of etoroPositions) {
+      const date = p.closeDate || p.openDate;
+      if (date) years.add(getFinancialYear(date));
+    }
+    return [...years].sort();
+  }, [etoroPositions]);
+
+  const handleYearClick = useCallback((year: string, e: React.MouseEvent) => {
+    if (year === "all") {
+      setSelectedYears(new Set());
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedYears((prev) => {
+        const next = new Set(prev);
+        if (next.has(year)) next.delete(year);
+        else next.add(year);
+        return next;
+      });
+    } else {
+      setSelectedYears(new Set([year]));
+    }
+  }, []);
+
+  // Filter positions by status and financial year
   const filteredPositions = useMemo(() => {
-    if (statusFilter === "all") return etoroPositions;
-    return etoroPositions.filter((p) => (p.status || "closed") === statusFilter);
-  }, [etoroPositions, statusFilter]);
+    let positions = etoroPositions;
+    if (statusFilter !== "all") {
+      positions = positions.filter((p) => (p.status || "closed") === statusFilter);
+    }
+    if (selectedYears.size > 0) {
+      positions = positions.filter((p) => {
+        const date = p.closeDate || p.openDate;
+        return date ? selectedYears.has(getFinancialYear(date)) : false;
+      });
+    }
+    return positions;
+  }, [etoroPositions, statusFilter, selectedYears]);
 
   // Dividend summary - prefer dedicated dividend data, fall back to transactions
   const dividendStats = useMemo(() => {
@@ -327,21 +375,40 @@ export default function InvestmentsPage() {
     };
   }, [filteredPositions, etoroPositions, derivedOpenPositions]);
 
-  // Account balance over time (from transactions)
-  const balanceOverTime = useMemo(() => {
-    if (etoroTransactions.length === 0) return [];
-    const sorted = [...etoroTransactions].sort(
-      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
-    );
-    const monthly: Record<string, number> = {};
-    for (const tx of sorted) {
+  // Portfolio value over time (estimated from deposits, realized P/L, dividends)
+  const portfolioValueOverTime = useMemo(() => {
+    const monthlyData: Record<string, { deposits: number; withdrawals: number; pl: number; dividends: number }> = {};
+
+    for (const tx of etoroTransactions) {
       const month = tx.date.slice(0, 7);
-      if (tx.balance > 0) monthly[month] = tx.balance;
+      if (!monthlyData[month]) monthlyData[month] = { deposits: 0, withdrawals: 0, pl: 0, dividends: 0 };
+      const type = tx.type.toLowerCase();
+      if (type.includes("deposit")) monthlyData[month].deposits += Math.abs(tx.amount);
+      else if (type.includes("withdraw")) monthlyData[month].withdrawals += Math.abs(tx.amount);
     }
-    return Object.entries(monthly)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, balance]) => ({ month, Balance: balance }));
-  }, [etoroTransactions]);
+
+    for (const p of etoroPositions) {
+      if ((p.status || "closed") === "closed" && p.closeDate) {
+        const month = p.closeDate.slice(0, 7);
+        if (!monthlyData[month]) monthlyData[month] = { deposits: 0, withdrawals: 0, pl: 0, dividends: 0 };
+        monthlyData[month].pl += p.profit;
+      }
+    }
+
+    for (const d of etoroDividends) {
+      const month = d.date.slice(0, 7);
+      if (!monthlyData[month]) monthlyData[month] = { deposits: 0, withdrawals: 0, pl: 0, dividends: 0 };
+      monthlyData[month].dividends += d.netDividendUSD;
+    }
+
+    const sortedMonths = Object.keys(monthlyData).sort();
+    let cumValue = 0;
+    return sortedMonths.map((month) => {
+      const d = monthlyData[month];
+      cumValue += d.deposits - d.withdrawals + d.pl + d.dividends;
+      return { month, Value: Math.round(cumValue * 100) / 100 };
+    });
+  }, [etoroTransactions, etoroPositions, etoroDividends]);
 
   // Paginated transactions
   const totalTxPages = Math.ceil(etoroTransactions.length / PAGE_SIZE);
@@ -394,6 +461,39 @@ export default function InvestmentsPage() {
           ))}
         </div>
       </div>
+
+      {/* Financial year filter */}
+      {availableYears.length > 1 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm text-[var(--muted)] mr-1">Tax Year:</span>
+          <button
+            onClick={(e) => handleYearClick("all", e)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+              selectedYears.size === 0
+                ? "bg-[var(--accent)] text-white"
+                : "text-[var(--muted)] hover:text-white hover:bg-white/5"
+            }`}
+          >
+            All
+          </button>
+          {availableYears.map((year) => (
+            <button
+              key={year}
+              onClick={(e) => handleYearClick(year, e)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                selectedYears.has(year)
+                  ? "bg-[var(--accent)] text-white"
+                  : "text-[var(--muted)] hover:text-white hover:bg-white/5"
+              }`}
+            >
+              {year}
+            </button>
+          ))}
+          {selectedYears.size > 0 && (
+            <span className="text-xs text-[var(--muted)] ml-2">Ctrl+click to select multiple</span>
+          )}
+        </div>
+      )}
 
       {/* eToro API connection status - always visible */}
       <div className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm ${
@@ -648,107 +748,110 @@ export default function InvestmentsPage() {
           )}
         </div>
 
-        {/* Portfolio allocation */}
-        <div className="card flex flex-col">
-          <h2 className="text-lg font-semibold text-white mb-4">
-            {portfolio.hasOpenPositions ? "Current Holdings Allocation" : "Capital Allocation by Instrument"}
-          </h2>
-          {stats.allocation.length > 0 ? (
-            <div className="flex-1 flex flex-col lg:flex-row items-center gap-4 min-h-0">
-              {/* Donut chart */}
-              <div className="flex-shrink-0" style={{ width: 220, height: 220 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={stats.allocation}
-                      cx="50%"
-                      cy="50%"
-                      outerRadius={100}
-                      innerRadius={55}
-                      dataKey="value"
-                      paddingAngle={2}
-                    >
-                      {stats.allocation.map((_, index) => (
-                        <Cell
-                          key={index}
-                          fill={COLORS[index % COLORS.length]}
-                        />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      contentStyle={{
-                        background: "#1e1e2e",
-                        border: "1px solid #2e2e3e",
-                        borderRadius: 8,
-                        color: "#e5e7eb",
-                      }}
-                      formatter={(value) => formatCurrency(Number(value), "USD")}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-              {/* Legend list */}
-              <div className="flex flex-col gap-2 text-sm min-w-0 flex-1">
-                {stats.allocation.map((item, index) => {
-                  const total = stats.allocation.reduce((s, a) => s + a.value, 0);
-                  const pct = total > 0 ? ((item.value / total) * 100).toFixed(1) : "0";
-                  return (
-                    <div key={item.name} className="flex items-center gap-2">
-                      <span
-                        className="flex-shrink-0 w-3 h-3 rounded-full"
-                        style={{ background: COLORS[index % COLORS.length] }}
+        {/* Right column: pie chart + portfolio value */}
+        <div className="flex flex-col gap-6">
+          {/* Portfolio allocation */}
+          <div className="card flex flex-col">
+            <h2 className="text-lg font-semibold text-white mb-4">
+              {portfolio.hasOpenPositions ? "Current Holdings Allocation" : "Capital Allocation by Instrument"}
+            </h2>
+            {stats.allocation.length > 0 ? (
+              <div className="flex-1 flex flex-col lg:flex-row items-center gap-4 min-h-0">
+                {/* Donut chart */}
+                <div className="flex-shrink-0" style={{ width: 220, height: 220 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={stats.allocation}
+                        cx="50%"
+                        cy="50%"
+                        outerRadius={100}
+                        innerRadius={55}
+                        dataKey="value"
+                        paddingAngle={2}
+                      >
+                        {stats.allocation.map((_, index) => (
+                          <Cell
+                            key={index}
+                            fill={COLORS[index % COLORS.length]}
+                          />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={{
+                          background: "#1e1e2e",
+                          border: "1px solid #2e2e3e",
+                          borderRadius: 8,
+                          color: "#e5e7eb",
+                        }}
+                        formatter={(value) => formatCurrency(Number(value), "USD")}
                       />
-                      <span className="text-[var(--muted)] truncate" title={item.name}>
-                        {item.name}
-                      </span>
-                      <span className="ml-auto flex-shrink-0 text-white font-medium">
-                        {pct}%
-                      </span>
-                    </div>
-                  );
-                })}
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                {/* Legend list */}
+                <div className="flex flex-col gap-2 text-sm min-w-0 flex-1">
+                  {stats.allocation.map((item, index) => {
+                    const total = stats.allocation.reduce((s, a) => s + a.value, 0);
+                    const pct = total > 0 ? ((item.value / total) * 100).toFixed(1) : "0";
+                    return (
+                      <div key={item.name} className="flex items-center gap-2">
+                        <span
+                          className="flex-shrink-0 w-3 h-3 rounded-full"
+                          style={{ background: COLORS[index % COLORS.length] }}
+                        />
+                        <span className="text-[var(--muted)] truncate" title={item.name}>
+                          {item.name}
+                        </span>
+                        <span className="ml-auto flex-shrink-0 text-white font-medium">
+                          {pct}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
+            ) : (
+              <p className="text-[var(--muted)] text-sm">No data.</p>
+            )}
+          </div>
+
+          {/* Portfolio value over time */}
+          {portfolioValueOverTime.length > 1 && (
+            <div className="card">
+              <h2 className="text-lg font-semibold text-white mb-4">
+                Portfolio Value Over Time
+              </h2>
+              <ResponsiveContainer width="100%" height={250}>
+                <AreaChart data={portfolioValueOverTime}>
+                  <XAxis dataKey="month" stroke="#6b7280" fontSize={12} />
+                  <YAxis
+                    stroke="#6b7280"
+                    fontSize={12}
+                    tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      background: "#1e1e2e",
+                      border: "1px solid #2e2e3e",
+                      borderRadius: 8,
+                      color: "#e5e7eb",
+                    }}
+                    formatter={(value) => formatCurrency(Number(value), "USD")}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="Value"
+                    stroke="#6366f1"
+                    fill="#6366f1"
+                    fillOpacity={0.15}
+                    strokeWidth={2}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
             </div>
-          ) : (
-            <p className="text-[var(--muted)] text-sm">No data.</p>
           )}
         </div>
-
-        {/* Account balance over time (right column, below pie chart) */}
-        {balanceOverTime.length > 1 && (
-          <div className="card">
-            <h2 className="text-lg font-semibold text-white mb-4">
-              Account Balance Over Time
-            </h2>
-            <ResponsiveContainer width="100%" height={250}>
-              <AreaChart data={balanceOverTime}>
-                <XAxis dataKey="month" stroke="#6b7280" fontSize={12} />
-                <YAxis
-                  stroke="#6b7280"
-                  fontSize={12}
-                  tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
-                />
-                <Tooltip
-                  contentStyle={{
-                    background: "#1e1e2e",
-                    border: "1px solid #2e2e3e",
-                    borderRadius: 8,
-                    color: "#e5e7eb",
-                  }}
-                  formatter={(value) => formatCurrency(Number(value), "USD")}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="Balance"
-                  stroke="#6366f1"
-                  fill="#6366f1"
-                  fillOpacity={0.15}
-                  strokeWidth={2}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        )}
       </div>
 
       {/* Positions table */}
