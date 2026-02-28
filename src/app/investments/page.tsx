@@ -102,54 +102,75 @@ export default function InvestmentsPage() {
     [etoroPositions]
   );
 
-  // Account balance from latest transaction (realized equity)
-  const accountBalance = useMemo(() => {
-    if (etoroTransactions.length === 0) return null;
-    const sorted = [...etoroTransactions].sort(
-      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-    );
-    const withBalance = sorted.find((tx) => tx.balance > 0);
-    return withBalance?.balance ?? null;
-  }, [etoroTransactions]);
+  // Derive portfolio metrics from all available data
+  const portfolio = useMemo(() => {
+    // Deposits & withdrawals from transaction history
+    const deposits = etoroTransactions
+      .filter((tx) => tx.type.toLowerCase().includes("deposit"))
+      .reduce((s, tx) => s + Math.abs(tx.amount), 0);
+    const withdrawals = etoroTransactions
+      .filter((tx) => tx.type.toLowerCase().includes("withdraw"))
+      .reduce((s, tx) => s + Math.abs(tx.amount), 0);
+    const netInvested = deposits - withdrawals;
 
-  // Total deposited / withdrawn from transactions
-  const depositStats = useMemo(() => {
-    const deposits = etoroTransactions.filter(
-      (tx) => tx.type.toLowerCase().includes("deposit")
+    // Realized P/L from all closed positions
+    const realizedPL = etoroPositions
+      .filter((p) => (p.status || "closed") === "closed")
+      .reduce((sum, p) => sum + p.profit, 0);
+
+    // Total dividends
+    const totalDividends = etoroDividends.length > 0
+      ? etoroDividends.reduce((s, d) => s + d.netDividendUSD, 0)
+      : etoroTransactions
+          .filter((tx) => tx.type.toLowerCase().includes("dividend") || tx.detail.toLowerCase().includes("dividend"))
+          .reduce((s, tx) => s + tx.amount, 0);
+
+    // Open positions value (if any)
+    const openValue = openPositions.reduce(
+      (sum, p) => sum + p.units * p.currentRate, 0
     );
-    const withdrawals = etoroTransactions.filter(
-      (tx) => tx.type.toLowerCase().includes("withdraw")
+    const openCost = openPositions.reduce(
+      (sum, p) => sum + p.units * p.openRate, 0
     );
+    const unrealizedPL = openValue - openCost;
+
+    // Estimated portfolio value:
+    // If we have open positions, use: open positions value + cash
+    // Otherwise estimate from: deposits - withdrawals + realized P/L + dividends
+    // This matches eToro's "Cash and Holdings" concept
+    const estimatedValue = openPositions.length > 0
+      ? openValue + (netInvested - openCost + realizedPL + totalDividends) // open holdings + estimated cash
+      : netInvested + realizedPL + totalDividends;
+
+    // Total P/L = realized + unrealized (matching eToro)
+    const totalPL = realizedPL + unrealizedPL + totalDividends;
+
+    // P/L % based on net invested (how eToro calculates it)
+    const plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
+
     return {
-      totalDeposited: deposits.reduce((s, tx) => s + Math.abs(tx.amount), 0),
-      totalWithdrawn: withdrawals.reduce((s, tx) => s + Math.abs(tx.amount), 0),
+      estimatedValue,
+      netInvested,
+      deposits,
+      withdrawals,
+      realizedPL,
+      unrealizedPL,
+      totalDividends,
+      totalPL,
+      plPercent,
+      openValue,
+      hasOpenPositions: openPositions.length > 0,
+      hasTransactions: etoroTransactions.length > 0,
     };
-  }, [etoroTransactions]);
+  }, [etoroPositions, etoroTransactions, etoroDividends, openPositions]);
 
   const stats = useMemo(() => {
-    // Portfolio value from open positions (actual current holdings)
-    const openValue = openPositions.reduce(
-      (sum, p) => sum + p.units * p.currentRate,
-      0
-    );
-    const openInvested = openPositions.reduce(
-      (sum, p) => sum + p.units * p.openRate,
-      0
-    );
-
     // P/L and win/loss from the filtered set (respects all/open/closed filter)
-    const totalProfit = filteredPositions.reduce((sum, p) => sum + p.profit, 0);
-    const totalAmountTraded = filteredPositions.reduce(
-      (sum, p) => sum + (p.amount || p.units * p.openRate),
-      0
-    );
-    const profitPercent =
-      totalAmountTraded > 0 ? (totalProfit / totalAmountTraded) * 100 : 0;
-
+    const filteredProfit = filteredPositions.reduce((sum, p) => sum + p.profit, 0);
     const winners = filteredPositions.filter((p) => p.profit > 0).length;
     const losers = filteredPositions.filter((p) => p.profit < 0).length;
 
-    // Allocation: open positions if available, otherwise aggregate closed P/L by instrument
+    // Allocation: open positions if available, otherwise aggregate closed by instrument
     let allocation: { name: string; value: number }[];
     if (openPositions.length > 0) {
       allocation = openPositions.map((p) => ({
@@ -183,16 +204,11 @@ export default function InvestmentsPage() {
       .slice(0, 20);
 
     return {
-      openValue,
-      openInvested,
-      totalProfit,
-      totalAmountTraded,
-      profitPercent,
+      filteredProfit,
       winners,
       losers,
       allocation,
       plData,
-      hasOpenPositions: openPositions.length > 0,
     };
   }, [filteredPositions, openPositions]);
 
@@ -258,23 +274,29 @@ export default function InvestmentsPage() {
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Stats - matching eToro layout */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <StatCard
-          label="Account Balance"
-          value={accountBalance !== null ? formatCurrency(accountBalance, "USD") : (stats.hasOpenPositions ? formatCurrency(stats.openValue, "USD") : "N/A")}
-          subtitle={accountBalance !== null ? "From latest transaction" : (stats.hasOpenPositions ? `${openPositions.length} open positions` : "Upload transactions CSV")}
+          label="Portfolio Value"
+          value={formatCurrency(portfolio.estimatedValue, "USD")}
+          subtitle={portfolio.hasOpenPositions
+            ? `${openPositions.length} open positions`
+            : portfolio.hasTransactions
+              ? "Estimated from transactions"
+              : "Upload transactions for accuracy"}
         />
         <StatCard
-          label="Total Deposited"
-          value={depositStats.totalDeposited > 0 ? formatCurrency(depositStats.totalDeposited, "USD") : (stats.hasOpenPositions ? formatCurrency(stats.openInvested, "USD") : "N/A")}
-          subtitle={depositStats.totalWithdrawn > 0 ? `${formatCurrency(depositStats.totalWithdrawn, "USD")} withdrawn` : undefined}
+          label="Net Invested"
+          value={formatCurrency(portfolio.netInvested, "USD")}
+          subtitle={portfolio.withdrawals > 0
+            ? `${formatCurrency(portfolio.deposits, "USD")} in / ${formatCurrency(portfolio.withdrawals, "USD")} out`
+            : undefined}
         />
         <StatCard
-          label={statusFilter === "all" ? "Realized P/L" : `P/L (${statusFilter})`}
-          value={formatCurrency(stats.totalProfit, "USD")}
-          subtitle={formatPercent(stats.profitPercent)}
-          trend={stats.totalProfit >= 0 ? "up" : "down"}
+          label="Total P/L"
+          value={formatCurrency(portfolio.totalPL, "USD")}
+          subtitle={formatPercent(portfolio.plPercent)}
+          trend={portfolio.totalPL >= 0 ? "up" : "down"}
         />
         <StatCard
           label="Win / Loss"
@@ -289,8 +311,28 @@ export default function InvestmentsPage() {
         />
       </div>
 
+      {/* Upload prompt if missing open positions */}
+      {!portfolio.hasOpenPositions && etoroPositions.length > 0 && (
+        <div className="card border border-[var(--accent)]/30 bg-[var(--accent)]/5">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-white font-medium">
+                Portfolio value is estimated from closed trades + deposits
+              </p>
+              <p className="text-xs text-[var(--muted)] mt-1">
+                For exact numbers matching eToro, upload your Open Positions CSV from your eToro account statement.
+                The estimated value ({formatCurrency(portfolio.estimatedValue, "USD")}) excludes unrealized gains/losses on current holdings.
+              </p>
+            </div>
+            <Link href="/upload" className="btn-primary text-sm whitespace-nowrap ml-4">
+              Upload
+            </Link>
+          </div>
+        </div>
+      )}
+
       {/* Performance Benchmark */}
-      {stats.profitPercent !== 0 && (
+      {portfolio.plPercent !== 0 && (
         <div className="card">
           <h2 className="text-lg font-semibold text-white mb-3">
             Performance Benchmark
@@ -298,28 +340,28 @@ export default function InvestmentsPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="p-3 rounded-lg bg-[var(--background)]">
               <p className="text-xs text-[var(--muted)] mb-1">Your Return</p>
-              <p className={`text-xl font-bold ${stats.profitPercent >= 0 ? "positive" : "negative"}`}>
-                {formatPercent(stats.profitPercent)}
+              <p className={`text-xl font-bold ${portfolio.plPercent >= 0 ? "positive" : "negative"}`}>
+                {formatPercent(portfolio.plPercent)}
               </p>
             </div>
             <div className="p-3 rounded-lg bg-[var(--background)]">
               <p className="text-xs text-[var(--muted)] mb-1">S&P 500 (avg annual)</p>
               <p className="text-xl font-bold text-white">+10.00%</p>
-              <p className={`text-xs ${stats.profitPercent > 10 ? "positive" : "negative"}`}>
-                {stats.profitPercent > 10 ? "Outperforming" : "Underperforming"} by {Math.abs(stats.profitPercent - 10).toFixed(2)}%
+              <p className={`text-xs ${portfolio.plPercent > 10 ? "positive" : "negative"}`}>
+                {portfolio.plPercent > 10 ? "Outperforming" : "Underperforming"} by {Math.abs(portfolio.plPercent - 10).toFixed(2)}%
               </p>
             </div>
             <div className="p-3 rounded-lg bg-[var(--background)]">
               <p className="text-xs text-[var(--muted)] mb-1">FTSE 100 (avg annual)</p>
               <p className="text-xl font-bold text-white">+7.50%</p>
-              <p className={`text-xs ${stats.profitPercent > 7.5 ? "positive" : "negative"}`}>
-                {stats.profitPercent > 7.5 ? "Outperforming" : "Underperforming"} by {Math.abs(stats.profitPercent - 7.5).toFixed(2)}%
+              <p className={`text-xs ${portfolio.plPercent > 7.5 ? "positive" : "negative"}`}>
+                {portfolio.plPercent > 7.5 ? "Outperforming" : "Underperforming"} by {Math.abs(portfolio.plPercent - 7.5).toFixed(2)}%
               </p>
             </div>
           </div>
           <p className="text-xs text-[var(--muted)] mt-2">
             Note: Benchmark figures are historical averages for reference only.
-            Your return is calculated from your actual eToro positions.
+            Your return is calculated from your actual eToro data.
           </p>
         </div>
       )}
@@ -376,7 +418,7 @@ export default function InvestmentsPage() {
         {/* Portfolio allocation */}
         <div className="card">
           <h2 className="text-lg font-semibold text-white mb-4">
-            {stats.hasOpenPositions ? "Portfolio Allocation" : "Capital Allocation by Instrument"}
+            {portfolio.hasOpenPositions ? "Portfolio Allocation" : "Capital Allocation by Instrument"}
           </h2>
           {stats.allocation.length > 0 ? (
             <ResponsiveContainer width="100%" height={350}>

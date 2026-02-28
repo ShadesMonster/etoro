@@ -42,6 +42,8 @@ export default function Dashboard() {
   const {
     transactions,
     etoroPositions,
+    etoroTransactions,
+    etoroDividends,
     retirementFunds,
     settings,
     categoryOverrides,
@@ -73,24 +75,41 @@ export default function Dashboard() {
     const bankBalanceGBP = latestTx?.balance ?? 0;
     const bankBalance = convertCurrency(bankBalanceGBP, "GBP", cur, rates);
 
-    // Investment value: use open positions for portfolio value, or account balance from eToro transactions
+    // Investment value: estimate from deposits - withdrawals + realized P/L + dividends
     const openEtoroPositions = etoroPositions.filter((p) => (p.status || "closed") === "open");
+    const closedPL = etoroPositions
+      .filter((p) => (p.status || "closed") === "closed")
+      .reduce((sum, p) => sum + p.profit, 0);
+    const etoroDeposits = etoroTransactions
+      .filter((tx) => tx.type.toLowerCase().includes("deposit"))
+      .reduce((s, tx) => s + Math.abs(tx.amount), 0);
+    const etoroWithdrawals = etoroTransactions
+      .filter((tx) => tx.type.toLowerCase().includes("withdraw"))
+      .reduce((s, tx) => s + Math.abs(tx.amount), 0);
+    const etoroNetInvested = etoroDeposits - etoroWithdrawals;
+    const etoroDivTotal = etoroDividends.length > 0
+      ? etoroDividends.reduce((s, d) => s + d.netDividendUSD, 0)
+      : etoroTransactions
+          .filter((tx) => tx.type.toLowerCase().includes("dividend") || tx.detail.toLowerCase().includes("dividend"))
+          .reduce((s, tx) => s + tx.amount, 0);
+
     let investmentValueUSD: number;
     if (openEtoroPositions.length > 0) {
-      investmentValueUSD = openEtoroPositions.reduce(
-        (sum, p) => sum + p.units * p.currentRate, 0
-      );
+      const openValue = openEtoroPositions.reduce((sum, p) => sum + p.units * p.currentRate, 0);
+      const openCost = openEtoroPositions.reduce((sum, p) => sum + p.units * p.openRate, 0);
+      investmentValueUSD = openValue + (etoroNetInvested - openCost + closedPL + etoroDivTotal);
+    } else if (etoroNetInvested > 0) {
+      investmentValueUSD = etoroNetInvested + closedPL + etoroDivTotal;
+    } else if (etoroPositions.length > 0) {
+      // No transaction data - rough fallback from positions only
+      investmentValueUSD = etoroPositions.reduce((sum, p) => sum + p.units * p.currentRate, 0);
     } else {
-      // Fall back to latest eToro transaction balance (realized equity)
-      const etoroTxs = useFinanceStore.getState().etoroTransactions;
-      const sorted = [...etoroTxs].sort(
-        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-      );
-      investmentValueUSD = sorted.find((tx) => tx.balance > 0)?.balance ?? 0;
+      investmentValueUSD = 0;
     }
-    const investmentProfitUSD = etoroPositions.reduce(
-      (sum, p) => sum + p.profit, 0
-    );
+    const investmentProfitUSD = closedPL + etoroDivTotal +
+      (openEtoroPositions.length > 0
+        ? openEtoroPositions.reduce((sum, p) => sum + p.profit, 0)
+        : 0);
     const investmentValue = convertCurrency(investmentValueUSD, "USD", cur, rates);
     const investmentProfit = convertCurrency(investmentProfitUSD, "USD", cur, rates);
 
