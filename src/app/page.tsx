@@ -73,9 +73,21 @@ export default function Dashboard() {
     const bankBalanceGBP = latestTx?.balance ?? 0;
     const bankBalance = convertCurrency(bankBalanceGBP, "GBP", cur, rates);
 
-    const investmentValueUSD = etoroPositions.reduce(
-      (sum, p) => sum + p.units * p.currentRate, 0
-    );
+    // Investment value: use open positions for portfolio value, or account balance from eToro transactions
+    const openEtoroPositions = etoroPositions.filter((p) => (p.status || "closed") === "open");
+    let investmentValueUSD: number;
+    if (openEtoroPositions.length > 0) {
+      investmentValueUSD = openEtoroPositions.reduce(
+        (sum, p) => sum + p.units * p.currentRate, 0
+      );
+    } else {
+      // Fall back to latest eToro transaction balance (realized equity)
+      const etoroTxs = useFinanceStore.getState().etoroTransactions;
+      const sorted = [...etoroTxs].sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+      );
+      investmentValueUSD = sorted.find((tx) => tx.balance > 0)?.balance ?? 0;
+    }
     const investmentProfitUSD = etoroPositions.reduce(
       (sum, p) => sum + p.profit, 0
     );

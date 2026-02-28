@@ -102,13 +102,37 @@ export default function InvestmentsPage() {
     [etoroPositions]
   );
 
+  // Account balance from latest transaction (realized equity)
+  const accountBalance = useMemo(() => {
+    if (etoroTransactions.length === 0) return null;
+    const sorted = [...etoroTransactions].sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    );
+    const withBalance = sorted.find((tx) => tx.balance > 0);
+    return withBalance?.balance ?? null;
+  }, [etoroTransactions]);
+
+  // Total deposited / withdrawn from transactions
+  const depositStats = useMemo(() => {
+    const deposits = etoroTransactions.filter(
+      (tx) => tx.type.toLowerCase().includes("deposit")
+    );
+    const withdrawals = etoroTransactions.filter(
+      (tx) => tx.type.toLowerCase().includes("withdraw")
+    );
+    return {
+      totalDeposited: deposits.reduce((s, tx) => s + Math.abs(tx.amount), 0),
+      totalWithdrawn: withdrawals.reduce((s, tx) => s + Math.abs(tx.amount), 0),
+    };
+  }, [etoroTransactions]);
+
   const stats = useMemo(() => {
-    // Portfolio value & invested only from OPEN positions (actual current holdings)
-    const portfolioValue = openPositions.reduce(
+    // Portfolio value from open positions (actual current holdings)
+    const openValue = openPositions.reduce(
       (sum, p) => sum + p.units * p.currentRate,
       0
     );
-    const totalInvested = openPositions.reduce(
+    const openInvested = openPositions.reduce(
       (sum, p) => sum + p.units * p.openRate,
       0
     );
@@ -125,27 +149,42 @@ export default function InvestmentsPage() {
     const winners = filteredPositions.filter((p) => p.profit > 0).length;
     const losers = filteredPositions.filter((p) => p.profit < 0).length;
 
-    // Allocation chart only from open positions (what you currently hold)
-    const allocation = openPositions.map((p) => ({
-      name: p.instrument,
-      value: Math.round(p.units * p.currentRate * 100) / 100,
-    }));
+    // Allocation: open positions if available, otherwise aggregate closed P/L by instrument
+    let allocation: { name: string; value: number }[];
+    if (openPositions.length > 0) {
+      allocation = openPositions.map((p) => ({
+        name: p.instrument,
+        value: Math.round(p.units * p.currentRate * 100) / 100,
+      }));
+    } else {
+      // Aggregate amount traded by instrument for closed positions
+      const byInstrument: Record<string, number> = {};
+      for (const p of filteredPositions) {
+        const amt = p.amount || p.units * p.openRate;
+        byInstrument[p.instrument] = (byInstrument[p.instrument] || 0) + amt;
+      }
+      allocation = Object.entries(byInstrument)
+        .map(([name, value]) => ({ name, value: Math.round(value * 100) / 100 }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 15);
+    }
 
-    // P/L chart from filtered positions (top 30 to keep readable)
-    const plData = filteredPositions
-      .map((p) => ({
-        name:
-          p.instrument.length > 12
-            ? p.instrument.slice(0, 12) + "..."
-            : p.instrument,
-        profit: Math.round(p.profit * 100) / 100,
+    // P/L aggregated by instrument (top 20 by absolute P/L)
+    const plByInstrument: Record<string, number> = {};
+    for (const p of filteredPositions) {
+      plByInstrument[p.instrument] = (plByInstrument[p.instrument] || 0) + p.profit;
+    }
+    const plData = Object.entries(plByInstrument)
+      .map(([name, profit]) => ({
+        name: name.length > 12 ? name.slice(0, 12) + "..." : name,
+        profit: Math.round(profit * 100) / 100,
       }))
-      .sort((a, b) => b.profit - a.profit)
-      .slice(0, 30);
+      .sort((a, b) => Math.abs(b.profit) - Math.abs(a.profit))
+      .slice(0, 20);
 
     return {
-      portfolioValue,
-      totalInvested,
+      openValue,
+      openInvested,
       totalProfit,
       totalAmountTraded,
       profitPercent,
@@ -222,16 +261,17 @@ export default function InvestmentsPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <StatCard
-          label="Portfolio Value"
-          value={formatCurrency(stats.portfolioValue, "USD")}
-          subtitle={stats.hasOpenPositions ? `${openPositions.length} open positions` : "No open positions"}
+          label="Account Balance"
+          value={accountBalance !== null ? formatCurrency(accountBalance, "USD") : (stats.hasOpenPositions ? formatCurrency(stats.openValue, "USD") : "N/A")}
+          subtitle={accountBalance !== null ? "From latest transaction" : (stats.hasOpenPositions ? `${openPositions.length} open positions` : "Upload transactions CSV")}
         />
         <StatCard
-          label="Invested (Open)"
-          value={formatCurrency(stats.totalInvested, "USD")}
+          label="Total Deposited"
+          value={depositStats.totalDeposited > 0 ? formatCurrency(depositStats.totalDeposited, "USD") : (stats.hasOpenPositions ? formatCurrency(stats.openInvested, "USD") : "N/A")}
+          subtitle={depositStats.totalWithdrawn > 0 ? `${formatCurrency(depositStats.totalWithdrawn, "USD")} withdrawn` : undefined}
         />
         <StatCard
-          label={statusFilter === "all" ? "Total P/L (All)" : `P/L (${statusFilter})`}
+          label={statusFilter === "all" ? "Realized P/L" : `P/L (${statusFilter})`}
           value={formatCurrency(stats.totalProfit, "USD")}
           subtitle={formatPercent(stats.profitPercent)}
           trend={stats.totalProfit >= 0 ? "up" : "down"}
@@ -239,7 +279,7 @@ export default function InvestmentsPage() {
         <StatCard
           label="Win / Loss"
           value={`${stats.winners} / ${stats.losers}`}
-          subtitle={`${filteredPositions.length} positions`}
+          subtitle={`${filteredPositions.length} trades`}
         />
         <StatCard
           label="Dividends"
@@ -288,7 +328,7 @@ export default function InvestmentsPage() {
         {/* P/L bar chart */}
         <div className="card">
           <h2 className="text-lg font-semibold text-white mb-4">
-            Profit / Loss by Position
+            Profit / Loss by Instrument
           </h2>
           {stats.plData.length > 0 ? (
             <ResponsiveContainer
@@ -336,7 +376,7 @@ export default function InvestmentsPage() {
         {/* Portfolio allocation */}
         <div className="card">
           <h2 className="text-lg font-semibold text-white mb-4">
-            Portfolio Allocation
+            {stats.hasOpenPositions ? "Portfolio Allocation" : "Capital Allocation by Instrument"}
           </h2>
           {stats.allocation.length > 0 ? (
             <ResponsiveContainer width="100%" height={350}>
