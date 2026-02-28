@@ -286,19 +286,23 @@ export default function InvestmentsPage() {
       }
     }
 
-    // Sort by value, take top 10, group remainder into "Other"
+    // Sort by value, group anything under 3% into "Other"
     const sortedAlloc = Object.entries(allocByInstrument)
       .map(([name, value]) => ({ name, value: Math.round(value * 100) / 100 }))
       .sort((a, b) => b.value - a.value);
 
-    const MAX_SLICES = 10;
+    const totalAlloc = sortedAlloc.reduce((s, e) => s + e.value, 0);
+    const THRESHOLD = 0.03; // 3%
+    const major = sortedAlloc.filter((e) => totalAlloc > 0 && e.value / totalAlloc >= THRESHOLD);
+    const minorValue = sortedAlloc
+      .filter((e) => totalAlloc === 0 || e.value / totalAlloc < THRESHOLD)
+      .reduce((s, e) => s + e.value, 0);
+
     let allocation: { name: string; value: number }[];
-    if (sortedAlloc.length > MAX_SLICES) {
-      const top = sortedAlloc.slice(0, MAX_SLICES);
-      const otherValue = sortedAlloc.slice(MAX_SLICES).reduce((s, e) => s + e.value, 0);
-      allocation = [...top, { name: "Other", value: Math.round(otherValue * 100) / 100 }];
+    if (minorValue > 0) {
+      allocation = [...major, { name: "Other", value: Math.round(minorValue * 100) / 100 }];
     } else {
-      allocation = sortedAlloc;
+      allocation = major;
     }
 
     // P/L aggregated by instrument (top 20 by absolute P/L)
