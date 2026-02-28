@@ -220,10 +220,14 @@ export function useLivePrices(): UseLivePricesResult {
             : (rate.ask ?? rate.Ask ?? 0);
           if (currentPrice <= 0) return null;
           const direction = pos.isBuy ? 1 : -1;
-          const upl = direction * pos.units * (currentPrice - (pos.openRate ?? 0));
+          // CRITICAL: multiply by openConversionRate to convert from instrument currency to USD.
+          // For USD instruments, openConversionRate = 1. For GBP pence instruments, it's ~0.0137.
+          // Without this, GBP pence positions give UPL in pence (~73x too high).
+          const convRate = pos.openConversionRate ?? 1;
+          const upl = direction * pos.units * (currentPrice - (pos.openRate ?? 0)) * convRate;
           const fees = pos.totalFees ?? 0;
           const equity = (pos.amount ?? 0) + upl + fees;
-          return { currentPrice, upl, fees, equity, amount: pos.amount ?? 0 };
+          return { currentPrice, upl, fees, equity, amount: pos.amount ?? 0, convRate };
         };
 
         // Compute per-mirror
@@ -314,6 +318,8 @@ export function useLivePrices(): UseLivePricesResult {
             units: pos.units,
             openRate: pos.openRate,
             amount: pos.amount,
+            leverage: pos.leverage,
+            openConversionRate: pos.openConversionRate,
             currentPrice,
             upl: upl.toFixed(2),
             equity: equity.toFixed(2),
