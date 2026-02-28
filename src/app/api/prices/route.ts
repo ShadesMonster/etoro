@@ -43,23 +43,21 @@ async function etoroFetch(path: string): Promise<any> {
 let instrumentCache: { data: Record<number, string>; timestamp: number } | null = null;
 const INSTRUMENT_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
-async function getInstrumentNames(): Promise<Record<number, string>> {
-  if (instrumentCache && Date.now() - instrumentCache.timestamp < INSTRUMENT_CACHE_TTL) {
-    return instrumentCache.data;
-  }
-
-  const metadataData = await etoroFetch("/market-data/instruments");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractInstruments(data: any): Record<number, string> {
   const names: Record<number, string> = {};
+  if (!data || typeof data !== "object") return names;
 
-  // eToro metadata can be nested in various ways:
-  // { InstrumentDisplayDatas: [...] } or { instruments: [...] } or just [...]
+  // Try known array field names
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const candidates: any[] = [
-    metadataData?.InstrumentDisplayDatas,
-    metadataData?.instrumentDisplayDatas,
-    metadataData?.instruments,
-    metadataData?.Instruments,
-    Array.isArray(metadataData) ? metadataData : null,
+    data?.InstrumentDisplayDatas,
+    data?.instrumentDisplayDatas,
+    data?.instruments,
+    data?.Instruments,
+    data?.InstrumentData,
+    data?.instrumentData,
+    Array.isArray(data) ? data : null,
   ];
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -71,9 +69,9 @@ async function getInstrumentNames(): Promise<Record<number, string>> {
     }
   }
 
-  // If still empty, try all array values in the response
-  if (instruments.length === 0 && metadataData && typeof metadataData === "object") {
-    for (const val of Object.values(metadataData)) {
+  // Fallback: scan all values for arrays
+  if (instruments.length === 0) {
+    for (const val of Object.values(data)) {
       if (Array.isArray(val) && val.length > 0) {
         instruments = val;
         break;
@@ -82,14 +80,71 @@ async function getInstrumentNames(): Promise<Record<number, string>> {
   }
 
   for (const inst of instruments) {
-    const id = inst.instrumentID ?? inst.InstrumentID;
+    const id = inst.instrumentID ?? inst.InstrumentID ?? inst.InstrumentId;
     const name = inst.instrumentDisplayName ?? inst.InstrumentDisplayName ??
-      inst.symbolFull ?? inst.SymbolFull ?? inst.name ?? inst.Name;
+      inst.symbolFull ?? inst.SymbolFull ?? inst.name ?? inst.Name ??
+      inst.InstrumentName ?? inst.instrumentName;
     if (id !== undefined && name) names[id] = name;
   }
 
-  console.log(`[eToro Metadata] Resolved ${Object.keys(names).length} instrument names` +
-    (instruments.length === 0 ? ` (response keys: ${Object.keys(metadataData || {}).join(", ")})` : ""));
+  return names;
+}
+
+async function getInstrumentNames(): Promise<Record<number, string>> {
+  if (instrumentCache && Date.now() - instrumentCache.timestamp < INSTRUMENT_CACHE_TTL) {
+    return instrumentCache.data;
+  }
+
+  let names: Record<number, string> = {};
+
+  // Strategy 1: eToro public API (authenticated)
+  try {
+    const metadataData = await etoroFetch("/market-data/instruments");
+    names = extractInstruments(metadataData);
+    if (Object.keys(names).length === 0) {
+      console.log(`[eToro Metadata] Public API returned 0 instruments. Keys: ${Object.keys(metadataData || {}).join(", ")}. Sample: ${JSON.stringify(metadataData).slice(0, 300)}`);
+    }
+  } catch (e) {
+    console.log(`[eToro Metadata] Public API failed: ${e instanceof Error ? e.message : e}`);
+  }
+
+  // Strategy 2: eToro static API (unauthenticated, well-known endpoint)
+  if (Object.keys(names).length === 0) {
+    try {
+      const res = await fetch(
+        "https://api.etorostatic.com/sapi/instrumentsmetadata/V1.1/instruments",
+        { signal: AbortSignal.timeout(15000) }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        names = extractInstruments(data);
+        console.log(`[eToro Metadata] Static API resolved ${Object.keys(names).length} instruments`);
+      } else {
+        console.log(`[eToro Metadata] Static API ${res.status}`);
+      }
+    } catch (e) {
+      console.log(`[eToro Metadata] Static API failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  // Strategy 3: eToro static API alternate path
+  if (Object.keys(names).length === 0) {
+    try {
+      const res = await fetch(
+        "https://api.etorostatic.com/sapi/instrumentsmetadata/V1.1/instruments/bulk",
+        { signal: AbortSignal.timeout(15000) }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        names = extractInstruments(data);
+        console.log(`[eToro Metadata] Static bulk API resolved ${Object.keys(names).length} instruments`);
+      }
+    } catch (e) {
+      console.log(`[eToro Metadata] Static bulk API failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  console.log(`[eToro Metadata] Final: ${Object.keys(names).length} instrument names resolved`);
 
   instrumentCache = { data: names, timestamp: Date.now() };
   return names;
@@ -135,8 +190,54 @@ export async function GET(req: NextRequest) {
     }
 
     if (action === "metadata") {
-      const data = await etoroFetch("/market-data/instruments");
-      return NextResponse.json(data);
+      // Return raw metadata response for debugging
+      let publicApiData = null;
+      let publicApiError = null;
+      let staticApiData = null;
+      let staticApiError = null;
+
+      try {
+        publicApiData = await etoroFetch("/market-data/instruments");
+      } catch (e) {
+        publicApiError = e instanceof Error ? e.message : String(e);
+      }
+
+      try {
+        const res = await fetch(
+          "https://api.etorostatic.com/sapi/instrumentsmetadata/V1.1/instruments",
+          { signal: AbortSignal.timeout(15000) }
+        );
+        if (res.ok) {
+          staticApiData = await res.json();
+        } else {
+          staticApiError = `HTTP ${res.status}`;
+        }
+      } catch (e) {
+        staticApiError = e instanceof Error ? e.message : String(e);
+      }
+
+      // Show shape info, not full data (can be huge)
+      const summarize = (d: unknown) => {
+        if (!d) return null;
+        if (Array.isArray(d)) return { type: "array", length: d.length, sample: d[0] };
+        if (typeof d === "object") {
+          const keys = Object.keys(d as object);
+          const summary: Record<string, unknown> = { type: "object", keys };
+          for (const k of keys) {
+            const v = (d as Record<string, unknown>)[k];
+            if (Array.isArray(v)) summary[k] = { type: "array", length: v.length, sample: v[0] };
+            else summary[k] = typeof v;
+          }
+          return summary;
+        }
+        return { type: typeof d };
+      };
+
+      return NextResponse.json({
+        publicApi: publicApiError ? { error: publicApiError } : summarize(publicApiData),
+        staticApi: staticApiError ? { error: staticApiError } : summarize(staticApiData),
+        resolvedNames: Object.keys(await getInstrumentNames().catch(() => ({}))).length,
+      });
     }
 
     if (action === "history") {
