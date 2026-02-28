@@ -106,41 +106,54 @@ export function useLivePrices(): UseLivePricesResult {
       const data = await res.json();
       console.log("[eToro API] Raw response:", data);
 
-      // eToro API uses PascalCase field names
-      // Portfolio response may be nested: data.Content.ClientPortfolio or flat
-      const clientPortfolio = data?.Content?.ClientPortfolio ?? data?.ClientPortfolio ?? data;
+      // eToro API returns { clientPortfolio: { ... } } (camelCase)
+      // Extract the inner portfolio object, trying all known casing variants
+      const cp = data?.clientPortfolio ?? data?.ClientPortfolio ?? data?.Content?.ClientPortfolio ?? data;
 
-      // Positions are in the portfolio object
-      const positions = clientPortfolio?.Positions ?? clientPortfolio?.positions ?? data?.Positions ?? data?.positions;
+      // Log the actual structure so we can see all field names
+      console.log("[eToro API] clientPortfolio keys:", Object.keys(cp));
+      console.log("[eToro API] clientPortfolio:", cp);
 
-      // Compute total P/L from positions if available
+      // Extract fields - try all known casing variants
+      const credit = cp?.credit ?? cp?.Credit ?? cp?.availableBalance ?? cp?.cash;
+      const positions = cp?.positions ?? cp?.Positions ?? cp?.openPositions;
+      const equity = cp?.equity ?? cp?.Equity ?? cp?.netEquity ?? cp?.NetEquity ?? cp?.totalValue;
+      const totalPLDirect = cp?.totalPL ?? cp?.TotalPL ?? cp?.pnl ?? cp?.PnL ?? cp?.profit;
+      const totalPLPercentDirect = cp?.totalPLPercent ?? cp?.TotalPLPercent ?? cp?.pnlPercent;
+
+      // Compute total P/L from positions if available and not directly provided
       let totalPLFromPositions: number | undefined;
       if (Array.isArray(positions)) {
         totalPLFromPositions = positions.reduce(
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (sum: number, p: any) => sum + (p.NetProfit ?? p.netProfit ?? 0),
+          (sum: number, p: any) => sum + (p.netProfit ?? p.NetProfit ?? p.profit ?? p.Profit ?? 0),
           0
         );
       }
 
-      // Net equity = credit + sum of position values
-      let netEquity: number | undefined;
-      const credit = clientPortfolio?.Credit ?? clientPortfolio?.credit ?? data?.Credit ?? data?.credit;
-      if (credit !== undefined && Array.isArray(positions)) {
+      // Compute equity from credit + positions if not directly available
+      let computedEquity: number | undefined;
+      if (equity !== undefined) {
+        computedEquity = equity;
+      } else if (credit !== undefined && Array.isArray(positions)) {
         const positionsValue = positions.reduce(
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (sum: number, p: any) => sum + (p.Amount ?? p.amount ?? 0) + (p.NetProfit ?? p.netProfit ?? 0),
+          (sum: number, p: any) => {
+            const invested = p.amount ?? p.Amount ?? p.investedAmount ?? 0;
+            const profit = p.netProfit ?? p.NetProfit ?? p.profit ?? p.Profit ?? 0;
+            return sum + invested + profit;
+          },
           0
         );
-        netEquity = credit + positionsValue;
+        computedEquity = credit + positionsValue;
       }
 
       const portfolio: EtoroPortfolio = {
         raw: data,
         credit,
-        netEquity: netEquity ?? data?.netEquity ?? data?.equity,
-        totalPL: totalPLFromPositions ?? data?.totalPL ?? data?.TotalPL ?? data?.pnl,
-        totalPLPercent: data?.totalPLPercent ?? data?.TotalPLPercent ?? data?.pnlPercent,
+        netEquity: computedEquity,
+        totalPL: totalPLDirect ?? totalPLFromPositions,
+        totalPLPercent: totalPLPercentDirect,
         positions,
         connected: true,
       };
