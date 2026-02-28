@@ -5,7 +5,7 @@ export interface Transaction {
   amount: number;
   balance?: number;
   category: SpendingCategory;
-  source: "barclays";
+  source: "barclays" | "monzo" | "revolut" | "starling" | "generic";
 }
 
 export type SpendingCategory =
@@ -53,18 +53,9 @@ export const CATEGORY_COLORS: Record<SpendingCategory, string> = {
 };
 
 export const ALL_CATEGORIES: SpendingCategory[] = [
-  "groceries",
-  "eating-out",
-  "transport",
-  "bills",
-  "shopping",
-  "entertainment",
-  "health",
-  "transfers",
-  "income",
-  "cash",
-  "subscriptions",
-  "other",
+  "groceries", "eating-out", "transport", "bills", "shopping",
+  "entertainment", "health", "transfers", "income", "cash",
+  "subscriptions", "other",
 ];
 
 export interface EtoroPosition {
@@ -114,10 +105,25 @@ export interface Budget {
   monthlyLimit: number;
 }
 
+export interface CategoryRule {
+  id: string;
+  pattern: string;
+  category: SpendingCategory;
+}
+
+export interface SavingsGoal {
+  id: string;
+  name: string;
+  targetAmount: number;
+  currentAmount: number;
+  targetDate?: string;
+}
+
 export interface UserSettings {
   preferredCurrency: "GBP" | "USD";
   exchangeRateGBPtoUSD: number;
   exchangeRateUSDtoGBP: number;
+  theme: "dark" | "light";
 }
 
 export interface ParseResult<T> {
@@ -131,4 +137,29 @@ export interface RecurringTransaction {
   frequency: "weekly" | "monthly" | "quarterly";
   lastDate: string;
   count: number;
+  expectedDay?: number;
+}
+
+export interface SpendingForecast {
+  spentSoFar: number;
+  projectedRemaining: number;
+  projectedTotal: number;
+  avgDailySpending: number;
+  daysRemaining: number;
+  daysElapsed: number;
+}
+
+export interface CategoryTrend {
+  category: SpendingCategory;
+  thisMonth: number;
+  lastMonth: number;
+  change: number;
+  changePercent: number;
+}
+
+export interface UpcomingBill {
+  description: string;
+  expectedDate: string;
+  expectedAmount: number;
+  frequency: string;
 }

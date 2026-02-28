@@ -18,8 +18,12 @@ import { useFinanceStore } from "@/lib/store";
 import {
   formatCurrency,
   formatDate,
+  formatPercent,
   getEffectiveCategory,
   detectRecurringTransactions,
+  calculateSpendingForecast,
+  calculateSpendingTrends,
+  getUpcomingBills,
 } from "@/lib/utils";
 import {
   CATEGORY_LABELS,
@@ -116,7 +120,7 @@ export default function SpendingPage() {
     return { totalSpent, totalIncome, categoryData, monthlyData };
   }, [spending, income, searchFiltered]);
 
-  // Budget progress for current date range
+  // Budget progress for current month
   const budgetProgress = useMemo(() => {
     if (!budgets || budgets.length === 0) return [];
     const now = new Date();
@@ -138,10 +142,28 @@ export default function SpendingPage() {
     });
   }, [budgets, txsWithCategory]);
 
+  // Spending forecast
+  const forecast = useMemo(
+    () => calculateSpendingForecast(transactions),
+    [transactions]
+  );
+
+  // Spending trends (month-over-month)
+  const trends = useMemo(
+    () => calculateSpendingTrends(transactions, categoryOverrides || {}),
+    [transactions, categoryOverrides]
+  );
+
   // Recurring transactions
   const recurring = useMemo(
     () => detectRecurringTransactions(transactions),
     [transactions]
+  );
+
+  // Upcoming bills
+  const upcomingBills = useMemo(
+    () => getUpcomingBills(recurring),
+    [recurring]
   );
 
   // Paginated + filtered transactions
@@ -157,7 +179,6 @@ export default function SpendingPage() {
     [filteredTransactions, page]
   );
 
-  // Reset page when filters change
   const handleCategoryChange = (cat: string | null) => {
     setSelectedCategory(cat);
     setPage(1);
@@ -168,7 +189,7 @@ export default function SpendingPage() {
       <div className="text-center py-20">
         <h1 className="text-2xl font-bold text-white mb-3">Spending</h1>
         <p className="text-[var(--muted)] mb-6">
-          No Barclays data imported yet. Upload a CSV to get started.
+          No bank data imported yet. Upload a CSV to get started.
         </p>
         <Link href="/upload" className="btn-primary inline-block">
           Upload CSV
@@ -179,10 +200,18 @@ export default function SpendingPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-white">Spending</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-white">Spending</h1>
+        <button
+          onClick={() => window.print()}
+          className="btn-secondary text-sm no-print"
+        >
+          Print / PDF
+        </button>
+      </div>
 
       {/* Filters */}
-      <div className="card">
+      <div className="card no-print">
         <div className="flex flex-wrap gap-3 items-end">
           <div>
             <label className="text-xs text-[var(--muted)] block mb-1">
@@ -266,6 +295,62 @@ export default function SpendingPage() {
         />
       </div>
 
+      {/* Spending Forecast */}
+      {forecast.spentSoFar > 0 && (
+        <div className="card">
+          <h2 className="text-lg font-semibold text-white mb-4">
+            This Month&apos;s Forecast
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+              <p className="text-xs text-[var(--muted)] mb-1">Spent so far</p>
+              <p className="text-lg font-semibold text-white">
+                {formatCurrency(forecast.spentSoFar)}
+              </p>
+              <p className="text-xs text-[var(--muted)]">
+                {forecast.daysElapsed} days elapsed
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-[var(--muted)] mb-1">Projected remaining</p>
+              <p className="text-lg font-semibold text-white">
+                {formatCurrency(forecast.projectedRemaining)}
+              </p>
+              <p className="text-xs text-[var(--muted)]">
+                {forecast.daysRemaining} days left
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-[var(--muted)] mb-1">Projected total</p>
+              <p className="text-lg font-semibold text-white">
+                {formatCurrency(forecast.projectedTotal)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-[var(--muted)] mb-1">Avg daily spend</p>
+              <p className="text-lg font-semibold text-white">
+                {formatCurrency(forecast.avgDailySpending)}
+              </p>
+            </div>
+          </div>
+          <div className="mt-3 budget-bar">
+            <div
+              className="budget-bar-fill"
+              style={{
+                width: `${Math.min(
+                  (forecast.daysElapsed / (forecast.daysElapsed + forecast.daysRemaining)) * 100,
+                  100
+                )}%`,
+                background: "var(--accent)",
+              }}
+            />
+          </div>
+          <p className="text-xs text-[var(--muted)] mt-1">
+            Month progress: {forecast.daysElapsed} of {forecast.daysElapsed + forecast.daysRemaining} days
+          </p>
+        </div>
+      )}
+
       {/* Budget progress */}
       {budgetProgress.length > 0 && (
         <div className="card">
@@ -308,6 +393,70 @@ export default function SpendingPage() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Spending Trends (Month over Month) */}
+      {trends.length > 0 && (
+        <div className="card">
+          <h2 className="text-lg font-semibold text-white mb-4">
+            Spending Trends (vs Last Month)
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[var(--muted)] border-b border-[var(--card-border)]">
+                  <th className="pb-2 pr-4">Category</th>
+                  <th className="pb-2 pr-4 text-right">This Month</th>
+                  <th className="pb-2 pr-4 text-right">Last Month</th>
+                  <th className="pb-2 pr-4 text-right">Change</th>
+                  <th className="pb-2 text-right">% Change</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trends.map((t) => (
+                  <tr
+                    key={t.category}
+                    className="border-b border-[var(--card-border)]/50 hover:bg-[var(--card-border)]/30"
+                  >
+                    <td className="py-2 pr-4">
+                      <span className="flex items-center gap-2">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full inline-block"
+                          style={{ background: CATEGORY_COLORS[t.category] }}
+                        />
+                        <span className="text-white">
+                          {CATEGORY_LABELS[t.category]}
+                        </span>
+                      </span>
+                    </td>
+                    <td className="py-2 pr-4 text-right text-white">
+                      {formatCurrency(t.thisMonth)}
+                    </td>
+                    <td className="py-2 pr-4 text-right text-[var(--muted)]">
+                      {formatCurrency(t.lastMonth)}
+                    </td>
+                    <td
+                      className={`py-2 pr-4 text-right ${
+                        t.change > 0 ? "negative" : t.change < 0 ? "positive" : ""
+                      }`}
+                    >
+                      {t.change > 0 ? "+" : ""}
+                      {formatCurrency(Math.abs(t.change))}
+                      {t.change > 0 ? " \u25B2" : t.change < 0 ? " \u25BC" : ""}
+                    </td>
+                    <td
+                      className={`py-2 text-right ${
+                        t.changePercent > 0 ? "negative" : t.changePercent < 0 ? "positive" : ""
+                      }`}
+                    >
+                      {formatPercent(t.changePercent)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -392,6 +541,48 @@ export default function SpendingPage() {
         </div>
       </div>
 
+      {/* Upcoming Bills */}
+      {upcomingBills.length > 0 && (
+        <div className="card">
+          <h2 className="text-lg font-semibold text-white mb-4">
+            Upcoming Bills (next 30 days)
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[var(--muted)] border-b border-[var(--card-border)]">
+                  <th className="pb-2 pr-4">Description</th>
+                  <th className="pb-2 pr-4">Expected Date</th>
+                  <th className="pb-2 pr-4">Frequency</th>
+                  <th className="pb-2 text-right">Expected Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {upcomingBills.map((bill, i) => (
+                  <tr
+                    key={i}
+                    className="border-b border-[var(--card-border)]/50 hover:bg-[var(--card-border)]/30"
+                  >
+                    <td className="py-2 pr-4 text-white">{bill.description}</td>
+                    <td className="py-2 pr-4 text-[var(--muted)]">
+                      {formatDate(bill.expectedDate)}
+                    </td>
+                    <td className="py-2 pr-4">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--accent)]/20 text-[var(--accent)]">
+                        {bill.frequency}
+                      </span>
+                    </td>
+                    <td className="py-2 text-right negative">
+                      -{formatCurrency(bill.expectedAmount)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Transaction list */}
       <div className="card">
         <div className="flex items-center justify-between mb-4">
@@ -423,7 +614,7 @@ export default function SpendingPage() {
               {paginatedTxs.map((tx) => (
                 <tr
                   key={tx.id}
-                  className="border-b border-[var(--card-border)]/50 hover:bg-white/5"
+                  className="border-b border-[var(--card-border)]/50 hover:bg-[var(--card-border)]/30"
                 >
                   <td className="py-2 pr-4 text-[var(--muted)]">
                     {formatDate(tx.date)}
@@ -490,7 +681,7 @@ export default function SpendingPage() {
                 {recurring.map((r, i) => (
                   <tr
                     key={i}
-                    className="border-b border-[var(--card-border)]/50 hover:bg-white/5"
+                    className="border-b border-[var(--card-border)]/50 hover:bg-[var(--card-border)]/30"
                   >
                     <td className="py-2 pr-4 text-white">{r.description}</td>
                     <td className="py-2 pr-4 text-right negative">

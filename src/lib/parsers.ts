@@ -5,6 +5,7 @@ import {
   EtoroTransaction,
   RetirementFund,
   ParseResult,
+  CategoryRule,
 } from "./types";
 import { categorizeTransaction } from "./categorize";
 
@@ -14,7 +15,10 @@ function genId(prefix: string) {
 }
 
 // ─── Barclays CSV Parser ─────────────────────────────────────────────────────
-export function parseBarclaysCSV(csvText: string): ParseResult<Transaction> {
+export function parseBarclaysCSV(
+  csvText: string,
+  customRules?: CategoryRule[]
+): ParseResult<Transaction> {
   const { data } = Papa.parse<Record<string, string>>(csvText, {
     header: true,
     skipEmptyLines: true,
@@ -70,13 +74,303 @@ export function parseBarclaysCSV(csvText: string): ParseResult<Transaction> {
       description: description.trim(),
       amount,
       balance,
-      category: categorizeTransaction(description, amount),
+      category: categorizeTransaction(description, amount, customRules),
       source: "barclays",
     });
   }
 
   if (skipped > 0)
     warnings.push(`${skipped} rows skipped (missing date or amount)`);
+
+  return {
+    data: transactions.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    ),
+    warnings,
+  };
+}
+
+// ─── Monzo CSV Parser ────────────────────────────────────────────────────────
+export function parseMonzoCSV(
+  csvText: string,
+  customRules?: CategoryRule[]
+): ParseResult<Transaction> {
+  const { data } = Papa.parse<Record<string, string>>(csvText, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (h) => h.trim().toLowerCase(),
+  });
+
+  const warnings: string[] = [];
+  const transactions: Transaction[] = [];
+  let skipped = 0;
+
+  const headers = data.length > 0 ? Object.keys(data[0]) : [];
+  if (!headers.includes("date"))
+    warnings.push(`"Date" column not found. Found: ${headers.join(", ")}`);
+  if (!headers.includes("amount"))
+    warnings.push(`"Amount" column not found. Found: ${headers.join(", ")}`);
+
+  for (const row of data) {
+    const date = row["date"] || row["created"] || "";
+    const description = row["name"] || row["description"] || "";
+    const amount = parseNum(row["amount"]);
+    const balance = row["balance"] ? parseNum(row["balance"]) : undefined;
+
+    if (!date) {
+      skipped++;
+      continue;
+    }
+
+    transactions.push({
+      id: genId("mnz"),
+      date: parseFlexibleDate(date),
+      description: description.trim(),
+      amount,
+      balance,
+      category: row["category"]
+        ? mapMonzoCategory(row["category"])
+        : categorizeTransaction(description, amount, customRules),
+      source: "monzo",
+    });
+  }
+
+  if (skipped > 0) warnings.push(`${skipped} rows skipped (missing date)`);
+
+  return {
+    data: transactions.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    ),
+    warnings,
+  };
+}
+
+function mapMonzoCategory(monzoCat: string): Transaction["category"] {
+  const map: Record<string, Transaction["category"]> = {
+    groceries: "groceries",
+    eating_out: "eating-out",
+    transport: "transport",
+    bills: "bills",
+    shopping: "shopping",
+    entertainment: "entertainment",
+    health: "health",
+    cash: "cash",
+    income: "income",
+    transfers: "transfers",
+    general: "other",
+    expenses: "other",
+    finances: "transfers",
+    holidays: "entertainment",
+    personal_care: "health",
+    family: "other",
+    charity: "other",
+  };
+  return map[monzoCat.toLowerCase().trim()] || "other";
+}
+
+// ─── Revolut CSV Parser ──────────────────────────────────────────────────────
+export function parseRevolutCSV(
+  csvText: string,
+  customRules?: CategoryRule[]
+): ParseResult<Transaction> {
+  const { data } = Papa.parse<Record<string, string>>(csvText, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (h) => h.trim().toLowerCase(),
+  });
+
+  const warnings: string[] = [];
+  const transactions: Transaction[] = [];
+  let skipped = 0;
+
+  const headers = data.length > 0 ? Object.keys(data[0]) : [];
+  const hasDate = headers.some((h) =>
+    ["started date", "completed date", "date"].includes(h)
+  );
+  if (!hasDate)
+    warnings.push(`Date column not found. Found: ${headers.join(", ")}`);
+
+  for (const row of data) {
+    const date =
+      row["started date"] || row["completed date"] || row["date"] || "";
+    const description = row["description"] || "";
+    const amount = parseNum(row["amount"]);
+    const balance = row["balance"] ? parseNum(row["balance"]) : undefined;
+    const state = (row["state"] || "").toLowerCase();
+
+    if (!date) {
+      skipped++;
+      continue;
+    }
+
+    if (state === "reverted" || state === "declined" || state === "failed")
+      continue;
+
+    transactions.push({
+      id: genId("rev"),
+      date: parseFlexibleDate(date),
+      description: description.trim(),
+      amount,
+      balance,
+      category: categorizeTransaction(description, amount, customRules),
+      source: "revolut",
+    });
+  }
+
+  if (skipped > 0) warnings.push(`${skipped} rows skipped (missing date)`);
+
+  return {
+    data: transactions.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    ),
+    warnings,
+  };
+}
+
+// ─── Starling CSV Parser ─────────────────────────────────────────────────────
+export function parseStarlingCSV(
+  csvText: string,
+  customRules?: CategoryRule[]
+): ParseResult<Transaction> {
+  const { data } = Papa.parse<Record<string, string>>(csvText, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (h) => h.trim().toLowerCase(),
+  });
+
+  const warnings: string[] = [];
+  const transactions: Transaction[] = [];
+  let skipped = 0;
+
+  const headers = data.length > 0 ? Object.keys(data[0]) : [];
+  const hasDate = headers.includes("date");
+  if (!hasDate)
+    warnings.push(`"Date" column not found. Found: ${headers.join(", ")}`);
+
+  for (const row of data) {
+    const date = row["date"] || "";
+    const description =
+      row["counter party"] || row["counterparty"] || row["reference"] || "";
+    const amount = parseNum(
+      row["amount (gbp)"] || row["amount"] || row["money in"] || ""
+    );
+    const balance = row["balance"]
+      ? parseNum(row["balance"])
+      : row["balance (gbp)"]
+      ? parseNum(row["balance (gbp)"])
+      : undefined;
+
+    if (!date) {
+      skipped++;
+      continue;
+    }
+
+    let finalAmount = amount;
+    if (
+      !row["amount (gbp)"] &&
+      !row["amount"] &&
+      (row["money in"] || row["money out"])
+    ) {
+      const moneyIn = parseNum(row["money in"]);
+      const moneyOut = parseNum(row["money out"]);
+      finalAmount = moneyIn > 0 ? moneyIn : -moneyOut;
+    }
+
+    transactions.push({
+      id: genId("stl"),
+      date: parseFlexibleDate(date),
+      description: description.trim(),
+      amount: finalAmount,
+      balance,
+      category: categorizeTransaction(description, finalAmount, customRules),
+      source: "starling",
+    });
+  }
+
+  if (skipped > 0) warnings.push(`${skipped} rows skipped (missing date)`);
+
+  return {
+    data: transactions.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    ),
+    warnings,
+  };
+}
+
+// ─── Generic CSV Parser ──────────────────────────────────────────────────────
+export function parseGenericCSV(
+  csvText: string,
+  customRules?: CategoryRule[]
+): ParseResult<Transaction> {
+  const { data } = Papa.parse<Record<string, string>>(csvText, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (h) => h.trim().toLowerCase(),
+  });
+
+  const warnings: string[] = [];
+  const transactions: Transaction[] = [];
+  let skipped = 0;
+
+  const headers = data.length > 0 ? Object.keys(data[0]) : [];
+  const dateCol = headers.find((h) =>
+    ["date", "transaction date", "posted date", "booking date"].includes(h)
+  );
+  const descCol = headers.find((h) =>
+    ["description", "memo", "narrative", "details", "reference", "name"].includes(h)
+  );
+  const amountCol = headers.find((h) =>
+    ["amount", "value", "transaction amount"].includes(h)
+  );
+  const debitCol = headers.find((h) =>
+    ["debit", "money out", "withdrawal"].includes(h)
+  );
+  const creditCol = headers.find((h) =>
+    ["credit", "money in", "deposit"].includes(h)
+  );
+  const balCol = headers.find((h) => ["balance", "running balance"].includes(h));
+
+  if (!dateCol)
+    warnings.push(
+      `Could not detect a date column. Found: ${headers.join(", ")}`
+    );
+  if (!amountCol && !debitCol)
+    warnings.push(
+      `Could not detect amount column. Found: ${headers.join(", ")}`
+    );
+
+  for (const row of data) {
+    const date = dateCol ? row[dateCol] : "";
+    const description = descCol ? row[descCol] : "";
+
+    let amount = 0;
+    if (amountCol) {
+      amount = parseNum(row[amountCol]);
+    } else if (debitCol || creditCol) {
+      const debit = debitCol ? parseNum(row[debitCol]) : 0;
+      const credit = creditCol ? parseNum(row[creditCol]) : 0;
+      amount = credit > 0 ? credit : -debit;
+    }
+
+    const balance = balCol ? parseNum(row[balCol]) || undefined : undefined;
+
+    if (!date) {
+      skipped++;
+      continue;
+    }
+
+    transactions.push({
+      id: genId("gen"),
+      date: parseFlexibleDate(date),
+      description: description.trim(),
+      amount,
+      balance,
+      category: categorizeTransaction(description, amount, customRules),
+      source: "generic",
+    });
+  }
+
+  if (skipped > 0) warnings.push(`${skipped} rows skipped (missing date)`);
 
   return {
     data: transactions.sort(
@@ -316,14 +610,19 @@ export function parseStandardLifeCSV(
 // ─── Detect file type ────────────────────────────────────────────────────────
 export type FileType =
   | "barclays"
+  | "monzo"
+  | "revolut"
+  | "starling"
   | "etoro-positions"
   | "etoro-transactions"
   | "standard-life"
+  | "generic"
   | "unknown";
 
 export function detectFileType(csvText: string): FileType {
   const headerLine = csvText.split("\n")[0]?.toLowerCase() || "";
 
+  // Barclays
   if (
     headerLine.includes("money in") ||
     headerLine.includes("money out") ||
@@ -332,6 +631,32 @@ export function detectFileType(csvText: string): FileType {
     return "barclays";
   }
 
+  // Monzo (has emoji column or specific monzo headers)
+  if (
+    (headerLine.includes("name") && headerLine.includes("category") && headerLine.includes("emoji")) ||
+    (headerLine.includes("created") && headerLine.includes("local_currency"))
+  ) {
+    return "monzo";
+  }
+
+  // Revolut
+  if (
+    headerLine.includes("started date") ||
+    (headerLine.includes("state") && headerLine.includes("description") && headerLine.includes("amount"))
+  ) {
+    return "revolut";
+  }
+
+  // Starling
+  if (
+    headerLine.includes("counter party") ||
+    headerLine.includes("counterparty") ||
+    headerLine.includes("amount (gbp)")
+  ) {
+    return "starling";
+  }
+
+  // eToro positions
   if (
     headerLine.includes("open rate") ||
     headerLine.includes("close rate") ||
@@ -340,6 +665,7 @@ export function detectFileType(csvText: string): FileType {
     return "etoro-positions";
   }
 
+  // eToro transactions
   if (
     headerLine.includes("realized equity") ||
     (headerLine.includes("type") && headerLine.includes("account balance"))
@@ -347,6 +673,7 @@ export function detectFileType(csvText: string): FileType {
     return "etoro-transactions";
   }
 
+  // Standard Life
   if (
     headerLine.includes("fund name") ||
     headerLine.includes("fund value") ||
@@ -356,8 +683,9 @@ export function detectFileType(csvText: string): FileType {
     return "standard-life";
   }
 
-  if (headerLine.includes("amount") && headerLine.includes("date")) {
-    return "barclays";
+  // Generic fallback with date + amount
+  if (headerLine.includes("date") && (headerLine.includes("amount") || headerLine.includes("debit"))) {
+    return "generic";
   }
 
   return "unknown";

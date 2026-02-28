@@ -13,6 +13,19 @@
   --muted: #6b7280;
 }
 
+[data-theme="light"] {
+  --background: #f4f5f7;
+  --foreground: #1a1a2e;
+  --card: #ffffff;
+  --card-border: #e2e4e9;
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --green: #16a34a;
+  --red: #dc2626;
+  --yellow: #ca8a04;
+  --muted: #6b7280;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
@@ -60,8 +73,7 @@ body {
 }
 
 .btn-secondary:hover {
-  background: white;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(128, 128, 128, 0.1);
   border-color: var(--muted);
 }
 
@@ -127,6 +139,10 @@ select:focus {
   border-color: var(--accent);
 }
 
+[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: none;
+}
+
 input[type="date"]::-webkit-calendar-picker-indicator {
   filter: invert(0.7);
 }
@@ -135,7 +151,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 .budget-bar {
   height: 8px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(128, 128, 128, 0.15);
   overflow: hidden;
 }
 
@@ -158,7 +174,7 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 }
 
 .pagination-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(128, 128, 128, 0.1);
   color: var(--foreground);
 }
 
@@ -206,4 +222,50 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
+}
+
+/* Light mode text overrides */
+[data-theme="light"] .text-white {
+  color: #1a1a2e;
+}
+
+/* Print styles */
+@media print {
+  nav,
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger,
+  button,
+  input,
+  select,
+  .pagination-btn,
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+    font-size: 11pt;
+  }
+
+  .card,
+  .stat-card {
+    background: white !important;
+    border: 1px solid #ddd !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .positive {
+    color: #16a34a !important;
+  }
+
+  .negative {
+    color: #dc2626 !important;
+  }
+
+  @page {
+    margin: 1.5cm;
+  }
 }

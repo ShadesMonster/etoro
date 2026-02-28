@@ -6,6 +6,10 @@ import { useToastStore } from "@/lib/toast";
 import {
   detectFileType,
   parseBarclaysCSV,
+  parseMonzoCSV,
+  parseRevolutCSV,
+  parseStarlingCSV,
+  parseGenericCSV,
   parseEtoroPositionsCSV,
   parseEtoroTransactionsCSV,
   parseStandardLifeCSV,
@@ -19,6 +23,7 @@ export default function FileUpload() {
     addEtoroPositions,
     addEtoroTransactions,
     addRetirementFunds,
+    categoryRules,
   } = useFinanceStore();
   const addToast = useToastStore((s) => s.addToast);
 
@@ -26,12 +31,41 @@ export default function FileUpload() {
     async (file: File) => {
       const text = await file.text();
       const fileType = detectFileType(text);
+      const rules = categoryRules && categoryRules.length > 0 ? categoryRules : undefined;
 
       switch (fileType) {
         case "barclays": {
-          const result = parseBarclaysCSV(text);
+          const result = parseBarclaysCSV(text, rules);
           addTransactions(result.data);
           addToast(`Imported ${result.data.length} Barclays transactions`, "success");
+          if (result.warnings.length > 0) setWarnings((w) => [...w, ...result.warnings]);
+          break;
+        }
+        case "monzo": {
+          const result = parseMonzoCSV(text, rules);
+          addTransactions(result.data);
+          addToast(`Imported ${result.data.length} Monzo transactions`, "success");
+          if (result.warnings.length > 0) setWarnings((w) => [...w, ...result.warnings]);
+          break;
+        }
+        case "revolut": {
+          const result = parseRevolutCSV(text, rules);
+          addTransactions(result.data);
+          addToast(`Imported ${result.data.length} Revolut transactions`, "success");
+          if (result.warnings.length > 0) setWarnings((w) => [...w, ...result.warnings]);
+          break;
+        }
+        case "starling": {
+          const result = parseStarlingCSV(text, rules);
+          addTransactions(result.data);
+          addToast(`Imported ${result.data.length} Starling transactions`, "success");
+          if (result.warnings.length > 0) setWarnings((w) => [...w, ...result.warnings]);
+          break;
+        }
+        case "generic": {
+          const result = parseGenericCSV(text, rules);
+          addTransactions(result.data);
+          addToast(`Imported ${result.data.length} transactions (generic CSV)`, "success");
           if (result.warnings.length > 0) setWarnings((w) => [...w, ...result.warnings]);
           break;
         }
@@ -63,7 +97,7 @@ export default function FileUpload() {
           );
       }
     },
-    [addTransactions, addEtoroPositions, addEtoroTransactions, addRetirementFunds, addToast]
+    [addTransactions, addEtoroPositions, addEtoroTransactions, addRetirementFunds, addToast, categoryRules]
   );
 
   const handleFiles = useCallback(
@@ -112,8 +146,7 @@ export default function FileUpload() {
           Drop CSV files here or click to browse
         </p>
         <p className="text-sm text-[var(--muted)]">
-          Supports Barclays statements, eToro account statements, and Standard
-          Life valuations
+          Supports Barclays, Monzo, Revolut, Starling, eToro, Standard Life, and generic CSV
         </p>
       </div>
 
@@ -154,18 +187,17 @@ export default function FileUpload() {
           </p>
         </div>
         <div className="card">
-          <h3 className="font-semibold mb-2 text-white">eToro</h3>
+          <h3 className="font-semibold mb-2 text-white">Monzo / Revolut / Starling</h3>
           <p className="text-[var(--muted)]">
-            Download Account Statement from eToro. Export the Closed Positions
-            and Transactions sheets as separate CSVs. Expected columns: Action,
-            Units, Open Rate, Close Rate, Profit.
+            Export transaction history from your bank app. Each format is
+            auto-detected from CSV headers.
           </p>
         </div>
         <div className="card">
-          <h3 className="font-semibold mb-2 text-white">Standard Life</h3>
+          <h3 className="font-semibold mb-2 text-white">eToro</h3>
           <p className="text-[var(--muted)]">
-            Export valuation history. Expected columns: Date, Fund Name, Total
-            Value, Contributions, Employer Contributions.
+            Download Account Statement from eToro. Export the Closed Positions
+            and Transactions sheets as separate CSVs.
           </p>
         </div>
       </div>
