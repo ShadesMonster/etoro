@@ -140,8 +140,8 @@ export default function InvestmentsPage() {
   );
 
   const handleRefreshPrices = useCallback(() => {
-    // Try eToro portfolio API first, fall back to market rates
-    fetchPortfolio();
+    // Skip cache on manual refresh so we always hit the API
+    fetchPortfolio(true);
   }, [fetchPortfolio]);
 
   // Fetch portfolio on first load
@@ -227,7 +227,7 @@ export default function InvestmentsPage() {
     const estimatedValue = apiEquity ?? (netInvested + realizedPL + totalDividends + unrealizedPL);
     const totalPL = apiPL ?? (realizedPL + unrealizedPL + totalDividends);
     const plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
-    const hasApiData = apiEquity !== undefined;
+    const hasApiData = etoroPortfolio?.connected === true;
 
     // Estimated cash = portfolio value - open positions value
     const estimatedCash = estimatedValue - openValue;

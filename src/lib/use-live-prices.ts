@@ -21,6 +21,8 @@ export interface EtoroPortfolio {
   totalPLPercent?: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   positions?: any[];
+  // Whether we successfully got data from the API (even if some fields are missing)
+  connected: boolean;
 }
 
 interface UseLivePricesResult {
@@ -36,8 +38,8 @@ interface UseLivePricesResult {
   lastUpdated: Date | null;
   // trigger a refresh
   fetchPrices: (instrumentNames: string[]) => Promise<void>;
-  // fetch full portfolio from eToro API
-  fetchPortfolio: () => Promise<void>;
+  // fetch full portfolio from eToro API (skipCache=true to force fresh fetch)
+  fetchPortfolio: (skipCache?: boolean) => Promise<void>;
 }
 
 const CACHE_KEY = "etoro-portfolio-cache";
@@ -75,32 +77,37 @@ export function useLivePrices(): UseLivePricesResult {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   // Fetch full portfolio directly from eToro API
-  const fetchPortfolio = useCallback(async () => {
+  const fetchPortfolio = useCallback(async (skipCache = false) => {
     setLoading(true);
     setError(null);
 
     try {
-      // Check cache first
-      const cached = getCachedPortfolio();
-      if (cached) {
-        setEtoroPortfolio(cached);
-        setLastUpdated(new Date());
-        setLoading(false);
-        return;
+      // Check cache first (unless skipping)
+      if (!skipCache) {
+        const cached = getCachedPortfolio();
+        if (cached) {
+          setEtoroPortfolio(cached);
+          setLastUpdated(new Date());
+          setLoading(false);
+          return;
+        }
       }
 
+      console.log("[eToro API] Fetching portfolio...");
       const res = await fetch("/api/prices?action=portfolio");
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `HTTP ${res.status}`);
+        const errMsg = data.error || `HTTP ${res.status}`;
+        console.error("[eToro API] Error:", errMsg);
+        throw new Error(errMsg);
       }
 
       const data = await res.json();
+      console.log("[eToro API] Raw response:", data);
 
       // eToro API uses PascalCase field names
       // Portfolio response may be nested: data.Content.ClientPortfolio or flat
-      // Also handle the P/L endpoint fields
       const clientPortfolio = data?.Content?.ClientPortfolio ?? data?.ClientPortfolio ?? data;
 
       // Positions are in the portfolio object
@@ -135,13 +142,23 @@ export function useLivePrices(): UseLivePricesResult {
         totalPL: totalPLFromPositions ?? data?.totalPL ?? data?.TotalPL ?? data?.pnl,
         totalPLPercent: data?.totalPLPercent ?? data?.TotalPLPercent ?? data?.pnlPercent,
         positions,
+        connected: true,
       };
+
+      console.log("[eToro API] Parsed portfolio:", {
+        credit: portfolio.credit,
+        netEquity: portfolio.netEquity,
+        totalPL: portfolio.totalPL,
+        positionCount: Array.isArray(positions) ? positions.length : "N/A",
+      });
 
       setCachedPortfolio(portfolio);
       setEtoroPortfolio(portfolio);
       setLastUpdated(new Date());
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to fetch portfolio");
+      const msg = e instanceof Error ? e.message : "Failed to fetch portfolio";
+      console.error("[eToro API] Failed:", msg);
+      setError(msg);
     } finally {
       setLoading(false);
     }
