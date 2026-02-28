@@ -12,6 +12,7 @@ import {
   parseGenericCSV,
   parseEtoroPositionsCSV,
   parseEtoroTransactionsCSV,
+  parseEtoroDividendsCSV,
   parseStandardLifeCSV,
 } from "@/lib/parsers";
 
@@ -22,6 +23,7 @@ export default function FileUpload() {
     addTransactions,
     addEtoroPositions,
     addEtoroTransactions,
+    addEtoroDividends,
     addRetirementFunds,
     categoryRules,
   } = useFinanceStore();
@@ -83,6 +85,13 @@ export default function FileUpload() {
           if (result.warnings.length > 0) setWarnings((w) => [...w, ...result.warnings]);
           break;
         }
+        case "etoro-dividends": {
+          const result = parseEtoroDividendsCSV(text);
+          addEtoroDividends(result.data);
+          addToast(`Imported ${result.data.length} eToro dividends`, "success");
+          if (result.warnings.length > 0) setWarnings((w) => [...w, ...result.warnings]);
+          break;
+        }
         case "standard-life": {
           const result = parseStandardLifeCSV(text);
           addRetirementFunds(result.data);
@@ -97,7 +106,7 @@ export default function FileUpload() {
           );
       }
     },
-    [addTransactions, addEtoroPositions, addEtoroTransactions, addRetirementFunds, addToast, categoryRules]
+    [addTransactions, addEtoroPositions, addEtoroTransactions, addEtoroDividends, addRetirementFunds, addToast, categoryRules]
   );
 
   const handleFiles = useCallback(
@@ -196,8 +205,8 @@ export default function FileUpload() {
         <div className="card">
           <h3 className="font-semibold mb-2 text-white">eToro</h3>
           <p className="text-[var(--muted)]">
-            Download Account Statement from eToro. Export the Closed Positions
-            and Transactions sheets as separate CSVs.
+            Download Account Statement from eToro. Export the Closed Positions,
+            Account Activity, and Dividends sheets as separate CSVs.
           </p>
         </div>
       </div>

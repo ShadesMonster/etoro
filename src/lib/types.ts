@@ -70,6 +70,19 @@ export interface EtoroPosition {
   closeDate?: string;
   type: "buy" | "sell";
   status?: "open" | "closed";
+  positionId?: string;
+  amount?: number;
+  leverage?: number;
+  spreadFees?: number;
+  marketSpread?: number;
+  profitGBP?: number;
+  fxRateOpen?: number;
+  fxRateClose?: number;
+  takeProfitRate?: number;
+  stopLossRate?: number;
+  overnightFees?: number;
+  isin?: string;
+  longShort?: "long" | "short";
 }
 
 export interface EtoroTransaction {
@@ -80,6 +93,22 @@ export interface EtoroTransaction {
   amount: number;
   realizedEquityChange: number;
   balance: number;
+  positionId?: string;
+  assetType?: string;
+}
+
+export interface EtoroDividend {
+  id: string;
+  date: string;
+  instrument: string;
+  netDividendUSD: number;
+  netDividendGBP: number;
+  withholdingTaxRate: number;
+  withholdingTaxUSD: number;
+  withholdingTaxGBP: number;
+  positionId?: string;
+  type?: string;
+  isin?: string;
 }
 
 export interface RetirementFund {

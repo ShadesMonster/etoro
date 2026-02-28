@@ -3,6 +3,7 @@ import {
   Transaction,
   EtoroPosition,
   EtoroTransaction,
+  EtoroDividend,
   RetirementFund,
   ParseResult,
   CategoryRule,
@@ -398,21 +399,25 @@ export function parseEtoroPositionsCSV(
   const hasInstrument = headers.some((h) =>
     ["action", "instrument name", "instrument"].includes(h)
   );
-  const hasUnits = headers.includes("units");
+  const hasUnits = headers.some((h) =>
+    ["units", "units / contracts"].includes(h)
+  );
   const hasOpenRate = headers.some((h) =>
     ["open rate", "open price"].includes(h)
   );
   const hasCloseRate = headers.some((h) =>
     ["close rate", "close price", "current rate"].includes(h)
   );
-  const hasProfit = headers.some((h) => ["profit", "p/l"].includes(h));
+  const hasProfit = headers.some((h) =>
+    ["profit", "p/l", "profit(usd)"].includes(h)
+  );
 
   if (!hasInstrument)
     warnings.push(
       `Instrument column not found. Expected "Action", "Instrument Name", or "Instrument". Found: ${headers.join(", ")}`
     );
   if (!hasUnits)
-    warnings.push(`"Units" column not found. Found: ${headers.join(", ")}`);
+    warnings.push(`"Units" or "Units / Contracts" column not found. Found: ${headers.join(", ")}`);
   if (!hasOpenRate)
     warnings.push(
       `Open price column not found. Expected "Open Rate" or "Open Price". Found: ${headers.join(", ")}`
@@ -423,7 +428,7 @@ export function parseEtoroPositionsCSV(
     );
   if (!hasProfit)
     warnings.push(
-      `Profit column not found. Expected "Profit" or "P/L". Found: ${headers.join(", ")}`
+      `Profit column not found. Expected "Profit", "Profit(USD)", or "P/L". Found: ${headers.join(", ")}`
     );
 
   let zeroCount = 0;
@@ -431,22 +436,38 @@ export function parseEtoroPositionsCSV(
   for (const row of data) {
     const instrument =
       row["action"] || row["instrument name"] || row["instrument"] || "";
-    const units = parseNum(row["units"]);
+    const units = parseNum(row["units / contracts"] || row["units"]);
     const openRate = parseNum(row["open rate"] || row["open price"]);
     const closeRate = parseNum(
       row["close rate"] || row["close price"] || row["current rate"]
     );
-    const profit = parseNum(row["profit"] || row["p/l"]);
+    const profit = parseNum(row["profit(usd)"] || row["profit"] || row["p/l"]);
+    const profitGBP = parseNum(row["profit(gbp)"]);
     const openDate = row["open date"] || row["date"] || "";
     const closeDate = row["close date"] || "";
+    const longShort = (row["long / short"] || "").toLowerCase().trim();
+    const positionId = row["position id"] || "";
+    const amount = parseNum(row["amount"]);
+    const leverage = parseNum(row["leverage"]);
+    const spreadFees = parseNum(row["spread fees (usd)"] || row["spread"]);
+    const marketSpread = parseNum(row["market spread (usd)"]);
+    const fxRateOpen = parseNum(row["fx rate at open (usd)"]);
+    const fxRateClose = parseNum(row["fx rate at close (usd)"]);
+    const takeProfitRate = parseNum(row["take profit rate"]);
+    const stopLossRate = parseNum(row["stop loss rate"]);
+    const overnightFees = parseNum(row["overnight fees and dividends"]);
+    const isin = row["isin"] || "";
 
     if (!instrument) continue;
 
     if (units === 0 && openRate === 0 && closeRate === 0) zeroCount++;
 
+    // Determine buy/sell from Long/Short column, prefix in name, or type column
     const isBuy =
-      instrument.toLowerCase().startsWith("buy") ||
-      row["type"]?.toLowerCase() === "buy";
+      longShort === "long" ||
+      (!longShort &&
+        (instrument.toLowerCase().startsWith("buy") ||
+          row["type"]?.toLowerCase() === "buy"));
 
     positions.push({
       id: genId("etoro"),
@@ -461,6 +482,19 @@ export function parseEtoroPositionsCSV(
       closeDate: closeDate ? parseFlexibleDate(closeDate) : undefined,
       type: isBuy ? "buy" : "sell",
       status: closeDate ? "closed" : "open",
+      positionId: positionId || undefined,
+      amount: amount || undefined,
+      leverage: leverage || undefined,
+      spreadFees: spreadFees || undefined,
+      marketSpread: marketSpread || undefined,
+      profitGBP: profitGBP || undefined,
+      fxRateOpen: fxRateOpen || undefined,
+      fxRateClose: fxRateClose || undefined,
+      takeProfitRate: takeProfitRate || undefined,
+      stopLossRate: stopLossRate || undefined,
+      overnightFees: overnightFees || undefined,
+      isin: isin || undefined,
+      longShort: longShort === "long" || longShort === "short" ? longShort : undefined,
     });
   }
 
@@ -490,7 +524,7 @@ export function parseEtoroTransactionsCSV(
   const hasDate = headers.includes("date");
   const hasType = headers.includes("type");
   const hasBalance = headers.some((h) =>
-    ["account balance", "balance"].includes(h)
+    ["account balance", "balance", "realized equity balance"].includes(h)
   );
 
   if (!hasDate)
@@ -499,7 +533,7 @@ export function parseEtoroTransactionsCSV(
     warnings.push(`"Type" column not found. Found: ${headers.join(", ")}`);
   if (!hasBalance)
     warnings.push(
-      `Balance column not found. Expected "Account Balance" or "Balance". Found: ${headers.join(", ")}`
+      `Balance column not found. Expected "Account Balance", "Realized Equity Balance", or "Balance". Found: ${headers.join(", ")}`
     );
 
   for (const row of data) {
@@ -508,7 +542,11 @@ export function parseEtoroTransactionsCSV(
     const detail = row["details"] || row["detail"] || "";
     const amount = parseNum(row["amount"]);
     const realizedEquityChange = parseNum(row["realized equity change"]);
-    const balance = parseNum(row["account balance"] || row["balance"]);
+    const balance = parseNum(
+      row["realized equity balance"] || row["account balance"] || row["balance"]
+    );
+    const positionId = row["position id"] || "";
+    const assetType = row["asset type"] || "";
 
     if (!date) {
       skipped++;
@@ -523,6 +561,8 @@ export function parseEtoroTransactionsCSV(
       amount,
       realizedEquityChange,
       balance,
+      positionId: positionId || undefined,
+      assetType: assetType || undefined,
     });
   }
 
@@ -530,6 +570,80 @@ export function parseEtoroTransactionsCSV(
 
   return {
     data: transactions.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    ),
+    warnings,
+  };
+}
+
+// ─── eToro Dividends CSV Parser ─────────────────────────────────────────────
+export function parseEtoroDividendsCSV(
+  csvText: string
+): ParseResult<EtoroDividend> {
+  const { data } = Papa.parse<Record<string, string>>(csvText, {
+    header: true,
+    skipEmptyLines: true,
+    transformHeader: (h) => h.trim().toLowerCase(),
+  });
+
+  const warnings: string[] = [];
+  const dividends: EtoroDividend[] = [];
+  let skipped = 0;
+
+  const headers = data.length > 0 ? Object.keys(data[0]) : [];
+  const hasDate = headers.some((h) =>
+    ["date of payment", "date"].includes(h)
+  );
+  const hasInstrument = headers.some((h) =>
+    ["instrument name", "instrument"].includes(h)
+  );
+
+  if (!hasDate)
+    warnings.push(
+      `Date column not found. Expected "Date of Payment". Found: ${headers.join(", ")}`
+    );
+  if (!hasInstrument)
+    warnings.push(
+      `Instrument column not found. Expected "Instrument Name". Found: ${headers.join(", ")}`
+    );
+
+  for (const row of data) {
+    const date = row["date of payment"] || row["date"] || "";
+    const instrument = row["instrument name"] || row["instrument"] || "";
+    const netDividendUSD = parseNum(row["net dividend received (usd)"]);
+    const netDividendGBP = parseNum(row["net dividend received (gbp)"]);
+    const withholdingTaxRateStr = (row["withholding tax rate (%)"] || "").replace(/%/g, "").trim();
+    const withholdingTaxRate = parseFloat(withholdingTaxRateStr) || 0;
+    const withholdingTaxUSD = parseNum(row["withholding tax amount (usd)"]);
+    const withholdingTaxGBP = parseNum(row["withholding tax amount (gbp)"]);
+    const positionId = row["position id"] || "";
+    const type = row["type"] || "";
+    const isin = row["isin"] || "";
+
+    if (!date) {
+      skipped++;
+      continue;
+    }
+
+    dividends.push({
+      id: genId("etoro-div"),
+      date: parseFlexibleDate(date),
+      instrument: instrument.trim(),
+      netDividendUSD,
+      netDividendGBP,
+      withholdingTaxRate,
+      withholdingTaxUSD,
+      withholdingTaxGBP,
+      positionId: positionId || undefined,
+      type: type || undefined,
+      isin: isin || undefined,
+    });
+  }
+
+  if (skipped > 0) warnings.push(`${skipped} rows skipped (missing date)`);
+
+  return {
+    data: dividends.sort(
       (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
     ),
     warnings,
@@ -615,6 +729,7 @@ export type FileType =
   | "starling"
   | "etoro-positions"
   | "etoro-transactions"
+  | "etoro-dividends"
   | "standard-life"
   | "generic"
   | "unknown";
@@ -656,6 +771,14 @@ export function detectFileType(csvText: string): FileType {
     return "starling";
   }
 
+  // eToro dividends (must check before positions since both can have "instrument")
+  if (
+    headerLine.includes("date of payment") ||
+    (headerLine.includes("net dividend") && headerLine.includes("withholding tax"))
+  ) {
+    return "etoro-dividends";
+  }
+
   // eToro positions
   if (
     headerLine.includes("open rate") ||
@@ -665,7 +788,7 @@ export function detectFileType(csvText: string): FileType {
     return "etoro-positions";
   }
 
-  // eToro transactions
+  // eToro transactions (account activity)
   if (
     headerLine.includes("realized equity") ||
     (headerLine.includes("type") && headerLine.includes("account balance"))
@@ -694,7 +817,11 @@ export function detectFileType(csvText: string): FileType {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function parseNum(val: string | undefined): number {
   if (!val) return 0;
-  return parseFloat(val.replace(/[£$,\s]/g, "")) || 0;
+  // Extract the first number from the string (handles "1300.00 GBP eToroMoney" etc.)
+  const cleaned = val.replace(/[£$,]/g, "").trim();
+  const match = cleaned.match(/^-?\s*[\d.]+/);
+  if (match) return parseFloat(match[0]) || 0;
+  return parseFloat(cleaned) || 0;
 }
 
 function parseUKDate(dateStr: string): string {

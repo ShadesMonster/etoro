@@ -31,11 +31,11 @@ const PAGE_SIZE = 25;
 type StatusFilter = "all" | "open" | "closed";
 
 export default function InvestmentsPage() {
-  const { etoroPositions, etoroTransactions } = useFinanceStore();
+  const { etoroPositions, etoroTransactions, etoroDividends } = useFinanceStore();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [txPage, setTxPage] = useState(1);
 
-  const hasData = etoroPositions.length > 0 || etoroTransactions.length > 0;
+  const hasData = etoroPositions.length > 0 || etoroTransactions.length > 0 || etoroDividends.length > 0;
 
   // Filter positions by status
   const filteredPositions = useMemo(() => {
@@ -43,27 +43,58 @@ export default function InvestmentsPage() {
     return etoroPositions.filter((p) => (p.status || "closed") === statusFilter);
   }, [etoroPositions, statusFilter]);
 
-  // Dividend summary from transactions
+  // Dividend summary - prefer dedicated dividend data, fall back to transactions
   const dividendStats = useMemo(() => {
-    const dividends = etoroTransactions.filter(
+    if (etoroDividends.length > 0) {
+      const totalUSD = etoroDividends.reduce((s, d) => s + d.netDividendUSD, 0);
+      const totalGBP = etoroDividends.reduce((s, d) => s + d.netDividendGBP, 0);
+      const totalWithholdingUSD = etoroDividends.reduce((s, d) => s + d.withholdingTaxUSD, 0);
+
+      const monthlyDivs: Record<string, number> = {};
+      for (const d of etoroDividends) {
+        const m = d.date.slice(0, 7);
+        monthlyDivs[m] = (monthlyDivs[m] || 0) + d.netDividendUSD;
+      }
+      const divMonths = Object.keys(monthlyDivs).length;
+      const avgMonthlyDiv = divMonths > 0 ? totalUSD / divMonths : 0;
+
+      return {
+        totalDividends: totalUSD,
+        totalDividendsGBP: totalGBP,
+        totalWithholdingTax: totalWithholdingUSD,
+        count: etoroDividends.length,
+        avgMonthlyDiv,
+        projectedAnnual: avgMonthlyDiv * 12,
+        hasDedicatedData: true,
+      };
+    }
+
+    // Fallback: derive from transactions
+    const txDividends = etoroTransactions.filter(
       (tx) =>
         tx.type.toLowerCase().includes("dividend") ||
         tx.detail.toLowerCase().includes("dividend")
     );
-    const totalDividends = dividends.reduce((s, tx) => s + tx.amount, 0);
+    const totalDividends = txDividends.reduce((s, tx) => s + tx.amount, 0);
 
-    // Monthly dividend income
     const monthlyDivs: Record<string, number> = {};
-    for (const d of dividends) {
+    for (const d of txDividends) {
       const m = d.date.slice(0, 7);
       monthlyDivs[m] = (monthlyDivs[m] || 0) + d.amount;
     }
     const divMonths = Object.keys(monthlyDivs).length;
     const avgMonthlyDiv = divMonths > 0 ? totalDividends / divMonths : 0;
-    const projectedAnnual = avgMonthlyDiv * 12;
 
-    return { dividends, totalDividends, count: dividends.length, avgMonthlyDiv, projectedAnnual };
-  }, [etoroTransactions]);
+    return {
+      totalDividends,
+      totalDividendsGBP: 0,
+      totalWithholdingTax: 0,
+      count: txDividends.length,
+      avgMonthlyDiv,
+      projectedAnnual: avgMonthlyDiv * 12,
+      hasDedicatedData: false,
+    };
+  }, [etoroDividends, etoroTransactions]);
 
   const stats = useMemo(() => {
     const totalValue = filteredPositions.reduce(
@@ -443,8 +474,58 @@ export default function InvestmentsPage() {
         </div>
       </div>
 
-      {/* Dividend history */}
-      {dividendStats.dividends.length > 0 && (
+      {/* Dividend history - dedicated dividend data */}
+      {etoroDividends.length > 0 && (
+        <div className="card">
+          <h2 className="text-lg font-semibold text-white mb-4">
+            Dividend History
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[var(--muted)] border-b border-[var(--card-border)]">
+                  <th className="pb-2 pr-4">Date</th>
+                  <th className="pb-2 pr-4">Instrument</th>
+                  <th className="pb-2 pr-4 text-right">Net (USD)</th>
+                  <th className="pb-2 pr-4 text-right">Net (GBP)</th>
+                  <th className="pb-2 pr-4 text-right">Tax Withheld</th>
+                  <th className="pb-2 text-right">Tax Rate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {etoroDividends.map((d) => (
+                  <tr
+                    key={d.id}
+                    className="border-b border-[var(--card-border)]/50 hover:bg-white/5"
+                  >
+                    <td className="py-2 pr-4 text-[var(--muted)]">
+                      {formatDate(d.date)}
+                    </td>
+                    <td className="py-2 pr-4 text-white">{d.instrument}</td>
+                    <td className="py-2 pr-4 text-right positive">
+                      +{formatCurrency(d.netDividendUSD, "USD")}
+                    </td>
+                    <td className="py-2 pr-4 text-right positive">
+                      +{formatCurrency(d.netDividendGBP, "GBP")}
+                    </td>
+                    <td className="py-2 pr-4 text-right text-[var(--muted)]">
+                      {formatCurrency(d.withholdingTaxUSD, "USD")}
+                    </td>
+                    <td className="py-2 text-right text-[var(--muted)]">
+                      {d.withholdingTaxRate}%
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Dividend history fallback - from transaction data */}
+      {etoroDividends.length === 0 && etoroTransactions.filter(
+        (tx) => tx.type.toLowerCase().includes("dividend") || tx.detail.toLowerCase().includes("dividend")
+      ).length > 0 && (
         <div className="card">
           <h2 className="text-lg font-semibold text-white mb-4">
             Dividend History
@@ -459,20 +540,22 @@ export default function InvestmentsPage() {
                 </tr>
               </thead>
               <tbody>
-                {dividendStats.dividends.map((tx) => (
-                  <tr
-                    key={tx.id}
-                    className="border-b border-[var(--card-border)]/50 hover:bg-white/5"
-                  >
-                    <td className="py-2 pr-4 text-[var(--muted)]">
-                      {formatDate(tx.date)}
-                    </td>
-                    <td className="py-2 pr-4 text-white">{tx.detail}</td>
-                    <td className="py-2 text-right positive">
-                      +{formatCurrency(tx.amount, "USD")}
-                    </td>
-                  </tr>
-                ))}
+                {etoroTransactions
+                  .filter((tx) => tx.type.toLowerCase().includes("dividend") || tx.detail.toLowerCase().includes("dividend"))
+                  .map((tx) => (
+                    <tr
+                      key={tx.id}
+                      className="border-b border-[var(--card-border)]/50 hover:bg-white/5"
+                    >
+                      <td className="py-2 pr-4 text-[var(--muted)]">
+                        {formatDate(tx.date)}
+                      </td>
+                      <td className="py-2 pr-4 text-white">{tx.detail}</td>
+                      <td className="py-2 text-right positive">
+                        +{formatCurrency(tx.amount, "USD")}
+                      </td>
+                    </tr>
+                  ))}
               </tbody>
             </table>
           </div>

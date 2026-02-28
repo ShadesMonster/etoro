@@ -7,7 +7,7 @@ import { formatCurrency, formatDate, getTaxYearOptions, exportEtoroCSV } from "@
 import StatCard from "@/components/StatCard";
 
 export default function TaxPage() {
-  const { etoroPositions, etoroTransactions } = useFinanceStore();
+  const { etoroPositions, etoroTransactions, etoroDividends } = useFinanceStore();
   const taxYears = getTaxYearOptions();
   const [selectedYear, setSelectedYear] = useState(taxYears[0]);
 
@@ -23,7 +23,14 @@ export default function TaxPage() {
     });
   }, [etoroPositions, selectedYear]);
 
-  // Dividends from eToro transactions
+  // Dedicated dividend data for the tax year
+  const taxYearDividends = useMemo(() => {
+    return (etoroDividends || []).filter(
+      (d) => d.date >= selectedYear.start && d.date <= selectedYear.end
+    );
+  }, [etoroDividends, selectedYear]);
+
+  // Fallback: dividends from eToro transactions
   const dividends = useMemo(() => {
     return (etoroTransactions || []).filter((tx) => {
       const type = tx.type.toLowerCase();
@@ -71,17 +78,35 @@ export default function TaxPage() {
     };
   }, [taxYearPositions]);
 
-  // Dividend summary
+  // Dividend summary - prefer dedicated data
   const dividendSummary = useMemo(() => {
+    if (taxYearDividends.length > 0) {
+      const totalGBP = taxYearDividends.reduce((s, d) => s + d.netDividendGBP, 0);
+      const totalUSD = taxYearDividends.reduce((s, d) => s + d.netDividendUSD, 0);
+      const totalWithholdingGBP = taxYearDividends.reduce((s, d) => s + d.withholdingTaxGBP, 0);
+      const allowance = 500; // UK dividend allowance 2024/25 onwards
+      return {
+        total: totalGBP,
+        totalUSD,
+        totalWithholdingGBP,
+        allowance,
+        taxable: Math.max(0, totalGBP - allowance),
+        count: taxYearDividends.length,
+        hasDedicatedData: true,
+      };
+    }
     const total = dividends.reduce((s, d) => s + d.amount, 0);
     const allowance = 500; // UK dividend allowance 2024/25 onwards
     return {
       total,
+      totalUSD: total,
+      totalWithholdingGBP: 0,
       allowance,
       taxable: Math.max(0, total - allowance),
       count: dividends.length,
+      hasDedicatedData: false,
     };
-  }, [dividends]);
+  }, [taxYearDividends, dividends]);
 
   const handleExportCSV = () => {
     const csv = exportEtoroCSV(
@@ -107,7 +132,7 @@ export default function TaxPage() {
   };
 
   const hasData =
-    (etoroPositions || []).length > 0 || (etoroTransactions || []).length > 0;
+    (etoroPositions || []).length > 0 || (etoroTransactions || []).length > 0 || (etoroDividends || []).length > 0;
 
   if (!hasData) {
     return (
@@ -219,7 +244,7 @@ export default function TaxPage() {
         <h2 className="text-lg font-semibold text-white mb-4">
           Dividends
         </h2>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
           <StatCard
             label="Total Dividends"
             value={formatCurrency(dividendSummary.total, "GBP")}
@@ -233,6 +258,13 @@ export default function TaxPage() {
             label="Taxable Dividends"
             value={formatCurrency(dividendSummary.taxable, "GBP")}
           />
+          {dividendSummary.hasDedicatedData && (
+            <StatCard
+              label="Withholding Tax Paid"
+              value={formatCurrency(dividendSummary.totalWithholdingGBP, "GBP")}
+              subtitle="Foreign tax credit"
+            />
+          )}
         </div>
       </div>
 
@@ -292,8 +324,56 @@ export default function TaxPage() {
         </div>
       )}
 
-      {/* Dividend detail */}
-      {dividends.length > 0 && (
+      {/* Dividend detail - dedicated data */}
+      {taxYearDividends.length > 0 && (
+        <div className="card">
+          <h2 className="text-lg font-semibold text-white mb-4">
+            Dividend History ({selectedYear.label})
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[var(--muted)] border-b border-[var(--card-border)]">
+                  <th className="pb-2 pr-4">Date</th>
+                  <th className="pb-2 pr-4">Instrument</th>
+                  <th className="pb-2 pr-4 text-right">Net (USD)</th>
+                  <th className="pb-2 pr-4 text-right">Net (GBP)</th>
+                  <th className="pb-2 pr-4 text-right">WHT Rate</th>
+                  <th className="pb-2 text-right">WHT (GBP)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {taxYearDividends.map((d) => (
+                  <tr
+                    key={d.id}
+                    className="border-b border-[var(--card-border)]/50 hover:bg-[var(--card-border)]/30"
+                  >
+                    <td className="py-2 pr-4 text-[var(--muted)]">
+                      {formatDate(d.date)}
+                    </td>
+                    <td className="py-2 pr-4 text-white">{d.instrument}</td>
+                    <td className="py-2 pr-4 text-right positive">
+                      +{formatCurrency(d.netDividendUSD, "USD")}
+                    </td>
+                    <td className="py-2 pr-4 text-right positive">
+                      +{formatCurrency(d.netDividendGBP, "GBP")}
+                    </td>
+                    <td className="py-2 pr-4 text-right text-[var(--muted)]">
+                      {d.withholdingTaxRate}%
+                    </td>
+                    <td className="py-2 text-right text-[var(--muted)]">
+                      {formatCurrency(d.withholdingTaxGBP, "GBP")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Dividend detail fallback - from transactions */}
+      {taxYearDividends.length === 0 && dividends.length > 0 && (
         <div className="card">
           <h2 className="text-lg font-semibold text-white mb-4">
             Dividend History ({selectedYear.label})
@@ -328,7 +408,7 @@ export default function TaxPage() {
         </div>
       )}
 
-      {taxYearPositions.length === 0 && dividends.length === 0 && (
+      {taxYearPositions.length === 0 && taxYearDividends.length === 0 && dividends.length === 0 && (
         <div className="card text-center py-8">
           <p className="text-[var(--muted)]">
             No closed positions or dividends found for the {selectedYear.label}{" "}

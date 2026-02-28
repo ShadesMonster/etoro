@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
-  Transaction, EtoroPosition, EtoroTransaction, RetirementFund,
+  Transaction, EtoroPosition, EtoroTransaction, EtoroDividend, RetirementFund,
   Budget, CategoryRule, SavingsGoal, UserSettings, SpendingCategory,
   Debt, DashboardWidget, DEFAULT_WIDGETS,
 } from "./types";
@@ -14,8 +14,10 @@ interface FinanceStore {
   clearTransactions: () => void;
   etoroPositions: EtoroPosition[];
   etoroTransactions: EtoroTransaction[];
+  etoroDividends: EtoroDividend[];
   addEtoroPositions: (positions: EtoroPosition[]) => void;
   addEtoroTransactions: (txs: EtoroTransaction[]) => void;
+  addEtoroDividends: (dividends: EtoroDividend[]) => void;
   clearEtoro: () => void;
   retirementFunds: RetirementFund[];
   addRetirementFunds: (funds: RetirementFund[]) => void;
@@ -69,11 +71,14 @@ export const useFinanceStore = create<FinanceStore>()(
       clearTransactions: () => set({ transactions: [], categoryOverrides: {} }),
       etoroPositions: [],
       etoroTransactions: [],
+      etoroDividends: [],
       addEtoroPositions: (p) =>
         set((s) => ({ etoroPositions: dedup([...s.etoroPositions, ...p]) })),
       addEtoroTransactions: (txs) =>
         set((s) => ({ etoroTransactions: dedup([...s.etoroTransactions, ...txs]) })),
-      clearEtoro: () => set({ etoroPositions: [], etoroTransactions: [] }),
+      addEtoroDividends: (divs) =>
+        set((s) => ({ etoroDividends: dedup([...s.etoroDividends, ...divs]) })),
+      clearEtoro: () => set({ etoroPositions: [], etoroTransactions: [], etoroDividends: [] }),
       retirementFunds: [],
       addRetirementFunds: (funds) =>
         set((s) => ({ retirementFunds: [...s.retirementFunds, ...funds] })),
@@ -136,8 +141,8 @@ export const useFinanceStore = create<FinanceStore>()(
       clearAll: () =>
         set({
           transactions: [], etoroPositions: [], etoroTransactions: [],
-          retirementFunds: [], categoryOverrides: {}, categoryRules: [],
-          budgets: [], savingsGoals: [], debts: [],
+          etoroDividends: [], retirementFunds: [], categoryOverrides: {},
+          categoryRules: [], budgets: [], savingsGoals: [], debts: [],
           dashboardWidgets: DEFAULT_WIDGETS, dismissedAlerts: [],
           settings: DEFAULT_SETTINGS,
         }),
@@ -145,7 +150,8 @@ export const useFinanceStore = create<FinanceStore>()(
         const s = get();
         return JSON.stringify({
           transactions: s.transactions, etoroPositions: s.etoroPositions,
-          etoroTransactions: s.etoroTransactions, retirementFunds: s.retirementFunds,
+          etoroTransactions: s.etoroTransactions, etoroDividends: s.etoroDividends,
+          retirementFunds: s.retirementFunds,
           categoryOverrides: s.categoryOverrides, categoryRules: s.categoryRules,
           budgets: s.budgets, savingsGoals: s.savingsGoals, debts: s.debts,
           dashboardWidgets: s.dashboardWidgets, settings: s.settings,
@@ -156,7 +162,9 @@ export const useFinanceStore = create<FinanceStore>()(
           const d = JSON.parse(json);
           set({
             transactions: d.transactions || [], etoroPositions: d.etoroPositions || [],
-            etoroTransactions: d.etoroTransactions || [], retirementFunds: d.retirementFunds || [],
+            etoroTransactions: d.etoroTransactions || [],
+            etoroDividends: d.etoroDividends || [],
+            retirementFunds: d.retirementFunds || [],
             categoryOverrides: d.categoryOverrides || {}, categoryRules: d.categoryRules || [],
             budgets: d.budgets || [], savingsGoals: d.savingsGoals || [],
             debts: d.debts || [], dashboardWidgets: d.dashboardWidgets || DEFAULT_WIDGETS,

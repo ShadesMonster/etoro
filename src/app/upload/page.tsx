@@ -25,6 +25,7 @@ export default function UploadPage() {
     transactions,
     etoroPositions,
     etoroTransactions,
+    etoroDividends,
     retirementFunds,
     clearTransactions,
     clearEtoro,
@@ -57,6 +58,7 @@ export default function UploadPage() {
     transactions.length > 0 ||
     etoroPositions.length > 0 ||
     etoroTransactions.length > 0 ||
+    etoroDividends.length > 0 ||
     retirementFunds.length > 0;
 
   const handleBackup = () => {
@@ -143,6 +145,17 @@ export default function UploadPage() {
                   <p className="text-white font-medium">eToro Transactions</p>
                   <p className="text-sm text-[var(--muted)]">
                     {etoroTransactions.length} transactions loaded
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {etoroDividends.length > 0 && (
+              <div className="flex items-center justify-between py-2 border-b border-[var(--card-border)]/50">
+                <div>
+                  <p className="text-white font-medium">eToro Dividends</p>
+                  <p className="text-sm text-[var(--muted)]">
+                    {etoroDividends.length} dividend payments loaded
                   </p>
                 </div>
               </div>
