@@ -735,7 +735,8 @@ export type FileType =
   | "unknown";
 
 export function detectFileType(csvText: string): FileType {
-  const headerLine = csvText.split("\n")[0]?.toLowerCase() || "";
+  // Strip BOM and trim - Excel CSVs often start with \uFEFF
+  const headerLine = csvText.replace(/^\uFEFF/, "").split("\n")[0]?.toLowerCase().trim() || "";
 
   // Barclays
   if (
@@ -774,7 +775,8 @@ export function detectFileType(csvText: string): FileType {
   // eToro dividends (must check before positions since both can have "instrument")
   if (
     headerLine.includes("date of payment") ||
-    (headerLine.includes("net dividend") && headerLine.includes("withholding tax"))
+    (headerLine.includes("net dividend") && headerLine.includes("withholding tax")) ||
+    (headerLine.includes("instrument name") && headerLine.includes("net dividend"))
   ) {
     return "etoro-dividends";
   }
