@@ -96,27 +96,42 @@ export default function InvestmentsPage() {
     };
   }, [etoroDividends, etoroTransactions]);
 
+  // Open positions (actual current holdings)
+  const openPositions = useMemo(
+    () => etoroPositions.filter((p) => (p.status || "closed") === "open"),
+    [etoroPositions]
+  );
+
   const stats = useMemo(() => {
-    const totalValue = filteredPositions.reduce(
+    // Portfolio value & invested only from OPEN positions (actual current holdings)
+    const portfolioValue = openPositions.reduce(
       (sum, p) => sum + p.units * p.currentRate,
       0
     );
-    const totalInvested = filteredPositions.reduce(
+    const totalInvested = openPositions.reduce(
       (sum, p) => sum + p.units * p.openRate,
       0
     );
+
+    // P/L and win/loss from the filtered set (respects all/open/closed filter)
     const totalProfit = filteredPositions.reduce((sum, p) => sum + p.profit, 0);
+    const totalAmountTraded = filteredPositions.reduce(
+      (sum, p) => sum + (p.amount || p.units * p.openRate),
+      0
+    );
     const profitPercent =
-      totalInvested > 0 ? (totalProfit / totalInvested) * 100 : 0;
+      totalAmountTraded > 0 ? (totalProfit / totalAmountTraded) * 100 : 0;
 
     const winners = filteredPositions.filter((p) => p.profit > 0).length;
     const losers = filteredPositions.filter((p) => p.profit < 0).length;
 
-    const allocation = filteredPositions.map((p) => ({
+    // Allocation chart only from open positions (what you currently hold)
+    const allocation = openPositions.map((p) => ({
       name: p.instrument,
       value: Math.round(p.units * p.currentRate * 100) / 100,
     }));
 
+    // P/L chart from filtered positions (top 30 to keep readable)
     const plData = filteredPositions
       .map((p) => ({
         name:
@@ -125,19 +140,22 @@ export default function InvestmentsPage() {
             : p.instrument,
         profit: Math.round(p.profit * 100) / 100,
       }))
-      .sort((a, b) => b.profit - a.profit);
+      .sort((a, b) => b.profit - a.profit)
+      .slice(0, 30);
 
     return {
-      totalValue,
+      portfolioValue,
       totalInvested,
       totalProfit,
+      totalAmountTraded,
       profitPercent,
       winners,
       losers,
       allocation,
       plData,
+      hasOpenPositions: openPositions.length > 0,
     };
-  }, [filteredPositions]);
+  }, [filteredPositions, openPositions]);
 
   // Account balance over time (from transactions)
   const balanceOverTime = useMemo(() => {
@@ -205,14 +223,15 @@ export default function InvestmentsPage() {
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <StatCard
           label="Portfolio Value"
-          value={formatCurrency(stats.totalValue, "USD")}
+          value={formatCurrency(stats.portfolioValue, "USD")}
+          subtitle={stats.hasOpenPositions ? `${openPositions.length} open positions` : "No open positions"}
         />
         <StatCard
-          label="Total Invested"
+          label="Invested (Open)"
           value={formatCurrency(stats.totalInvested, "USD")}
         />
         <StatCard
-          label="Total P/L"
+          label={statusFilter === "all" ? "Total P/L (All)" : `P/L (${statusFilter})`}
           value={formatCurrency(stats.totalProfit, "USD")}
           subtitle={formatPercent(stats.profitPercent)}
           trend={stats.totalProfit >= 0 ? "up" : "down"}
