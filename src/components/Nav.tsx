@@ -10,6 +10,7 @@ const links = [
   { href: "/investments", label: "Investments" },
   { href: "/retirement", label: "Retirement" },
   { href: "/upload", label: "Upload" },
+  { href: "/settings", label: "Settings" },
 ];
 
 export default function Nav() {

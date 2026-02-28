@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -12,55 +12,75 @@ import {
   PieChart,
   Pie,
   Legend,
+  AreaChart,
+  Area,
 } from "recharts";
 import Link from "next/link";
 import { useFinanceStore } from "@/lib/store";
 import { formatCurrency, formatDate, formatPercent } from "@/lib/utils";
 import StatCard from "@/components/StatCard";
+import Pagination from "@/components/Pagination";
 
 const COLORS = [
-  "#6366f1",
-  "#22c55e",
-  "#f97316",
-  "#ec4899",
-  "#14b8a6",
-  "#eab308",
-  "#8b5cf6",
-  "#3b82f6",
-  "#ef4444",
-  "#a855f7",
+  "#6366f1", "#22c55e", "#f97316", "#ec4899", "#14b8a6",
+  "#eab308", "#8b5cf6", "#3b82f6", "#ef4444", "#a855f7",
 ];
+
+const PAGE_SIZE = 25;
+
+type StatusFilter = "all" | "open" | "closed";
 
 export default function InvestmentsPage() {
   const { etoroPositions, etoroTransactions } = useFinanceStore();
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [txPage, setTxPage] = useState(1);
 
   const hasData = etoroPositions.length > 0 || etoroTransactions.length > 0;
 
+  // Filter positions by status
+  const filteredPositions = useMemo(() => {
+    if (statusFilter === "all") return etoroPositions;
+    return etoroPositions.filter((p) => (p.status || "closed") === statusFilter);
+  }, [etoroPositions, statusFilter]);
+
+  // Dividend summary from transactions
+  const dividendStats = useMemo(() => {
+    const dividends = etoroTransactions.filter(
+      (tx) =>
+        tx.type.toLowerCase().includes("dividend") ||
+        tx.detail.toLowerCase().includes("dividend")
+    );
+    const totalDividends = dividends.reduce((s, tx) => s + tx.amount, 0);
+    return { dividends, totalDividends, count: dividends.length };
+  }, [etoroTransactions]);
+
   const stats = useMemo(() => {
-    const totalValue = etoroPositions.reduce(
+    const totalValue = filteredPositions.reduce(
       (sum, p) => sum + p.units * p.currentRate,
       0
     );
-    const totalInvested = etoroPositions.reduce(
+    const totalInvested = filteredPositions.reduce(
       (sum, p) => sum + p.units * p.openRate,
       0
     );
-    const totalProfit = etoroPositions.reduce((sum, p) => sum + p.profit, 0);
-    const profitPercent = totalInvested > 0 ? (totalProfit / totalInvested) * 100 : 0;
+    const totalProfit = filteredPositions.reduce((sum, p) => sum + p.profit, 0);
+    const profitPercent =
+      totalInvested > 0 ? (totalProfit / totalInvested) * 100 : 0;
 
-    const winners = etoroPositions.filter((p) => p.profit > 0).length;
-    const losers = etoroPositions.filter((p) => p.profit < 0).length;
+    const winners = filteredPositions.filter((p) => p.profit > 0).length;
+    const losers = filteredPositions.filter((p) => p.profit < 0).length;
 
-    // Portfolio allocation
-    const allocation = etoroPositions.map((p) => ({
+    const allocation = filteredPositions.map((p) => ({
       name: p.instrument,
       value: Math.round(p.units * p.currentRate * 100) / 100,
     }));
 
-    // P/L by position
-    const plData = etoroPositions
+    const plData = filteredPositions
       .map((p) => ({
-        name: p.instrument.length > 12 ? p.instrument.slice(0, 12) + "..." : p.instrument,
+        name:
+          p.instrument.length > 12
+            ? p.instrument.slice(0, 12) + "..."
+            : p.instrument,
         profit: Math.round(p.profit * 100) / 100,
       }))
       .sort((a, b) => b.profit - a.profit);
@@ -75,7 +95,34 @@ export default function InvestmentsPage() {
       allocation,
       plData,
     };
-  }, [etoroPositions]);
+  }, [filteredPositions]);
+
+  // Account balance over time (from transactions)
+  const balanceOverTime = useMemo(() => {
+    if (etoroTransactions.length === 0) return [];
+    const sorted = [...etoroTransactions].sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
+    );
+    const monthly: Record<string, number> = {};
+    for (const tx of sorted) {
+      const month = tx.date.slice(0, 7);
+      if (tx.balance > 0) monthly[month] = tx.balance;
+    }
+    return Object.entries(monthly)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, balance]) => ({ month, Balance: balance }));
+  }, [etoroTransactions]);
+
+  // Paginated transactions
+  const totalTxPages = Math.ceil(etoroTransactions.length / PAGE_SIZE);
+  const paginatedTxs = useMemo(
+    () =>
+      etoroTransactions.slice(
+        (txPage - 1) * PAGE_SIZE,
+        txPage * PAGE_SIZE
+      ),
+    [etoroTransactions, txPage]
+  );
 
   if (!hasData) {
     return (
@@ -93,10 +140,27 @@ export default function InvestmentsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-white">Investments (eToro)</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-white">Investments (eToro)</h1>
+        <div className="flex gap-1">
+          {(["all", "open", "closed"] as StatusFilter[]).map((s) => (
+            <button
+              key={s}
+              onClick={() => setStatusFilter(s)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                statusFilter === s
+                  ? "bg-[var(--accent)] text-white"
+                  : "text-[var(--muted)] hover:text-white hover:bg-white/5"
+              }`}
+            >
+              {s.charAt(0).toUpperCase() + s.slice(1)}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <StatCard
           label="Portfolio Value"
           value={formatCurrency(stats.totalValue, "USD")}
@@ -114,7 +178,13 @@ export default function InvestmentsPage() {
         <StatCard
           label="Win / Loss"
           value={`${stats.winners} / ${stats.losers}`}
-          subtitle={`${etoroPositions.length} total positions`}
+          subtitle={`${filteredPositions.length} positions`}
+        />
+        <StatCard
+          label="Dividends"
+          value={formatCurrency(dividendStats.totalDividends, "USD")}
+          subtitle={`${dividendStats.count} payments`}
+          trend={dividendStats.totalDividends > 0 ? "up" : "neutral"}
         />
       </div>
 
@@ -125,9 +195,17 @@ export default function InvestmentsPage() {
             Profit / Loss by Position
           </h2>
           {stats.plData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={Math.max(300, stats.plData.length * 35)}>
+            <ResponsiveContainer
+              width="100%"
+              height={Math.max(300, stats.plData.length * 35)}
+            >
               <BarChart data={stats.plData} layout="vertical">
-                <XAxis type="number" stroke="#6b7280" fontSize={12} tickFormatter={(v) => `$${v}`} />
+                <XAxis
+                  type="number"
+                  stroke="#6b7280"
+                  fontSize={12}
+                  tickFormatter={(v) => `$${v}`}
+                />
                 <YAxis
                   type="category"
                   dataKey="name"
@@ -204,6 +282,42 @@ export default function InvestmentsPage() {
         </div>
       </div>
 
+      {/* Account balance over time */}
+      {balanceOverTime.length > 1 && (
+        <div className="card">
+          <h2 className="text-lg font-semibold text-white mb-4">
+            Account Balance Over Time
+          </h2>
+          <ResponsiveContainer width="100%" height={250}>
+            <AreaChart data={balanceOverTime}>
+              <XAxis dataKey="month" stroke="#6b7280" fontSize={12} />
+              <YAxis
+                stroke="#6b7280"
+                fontSize={12}
+                tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: "#1e1e2e",
+                  border: "1px solid #2e2e3e",
+                  borderRadius: 8,
+                  color: "#e5e7eb",
+                }}
+                formatter={(value) => formatCurrency(Number(value), "USD")}
+              />
+              <Area
+                type="monotone"
+                dataKey="Balance"
+                stroke="#6366f1"
+                fill="#6366f1"
+                fillOpacity={0.15}
+                strokeWidth={2}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
       {/* Positions table */}
       <div className="card">
         <h2 className="text-lg font-semibold text-white mb-4">Positions</h2>
@@ -213,6 +327,7 @@ export default function InvestmentsPage() {
               <tr className="text-left text-[var(--muted)] border-b border-[var(--card-border)]">
                 <th className="pb-2 pr-4">Instrument</th>
                 <th className="pb-2 pr-4">Type</th>
+                <th className="pb-2 pr-4">Status</th>
                 <th className="pb-2 pr-4 text-right">Units</th>
                 <th className="pb-2 pr-4 text-right">Open Price</th>
                 <th className="pb-2 pr-4 text-right">Current/Close</th>
@@ -221,7 +336,7 @@ export default function InvestmentsPage() {
               </tr>
             </thead>
             <tbody>
-              {etoroPositions.map((p) => (
+              {filteredPositions.map((p) => (
                 <tr
                   key={p.id}
                   className="border-b border-[var(--card-border)]/50 hover:bg-white/5"
@@ -240,7 +355,20 @@ export default function InvestmentsPage() {
                       {p.type.toUpperCase()}
                     </span>
                   </td>
-                  <td className="py-2 pr-4 text-right">{p.units.toFixed(4)}</td>
+                  <td className="py-2 pr-4">
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded-full ${
+                        (p.status || "closed") === "open"
+                          ? "bg-blue-500/20 text-blue-400"
+                          : "bg-gray-500/20 text-gray-400"
+                      }`}
+                    >
+                      {(p.status || "closed").toUpperCase()}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-4 text-right">
+                    {p.units.toFixed(4)}
+                  </td>
                   <td className="py-2 pr-4 text-right">
                     {formatCurrency(p.openRate, "USD")}
                   </td>
@@ -252,7 +380,8 @@ export default function InvestmentsPage() {
                       p.profit >= 0 ? "positive" : "negative"
                     }`}
                   >
-                    {formatCurrency(p.profit, "USD")}
+                    {p.profit >= 0 ? "▲ " : "▼ "}
+                    {formatCurrency(Math.abs(p.profit), "USD")}
                   </td>
                   <td
                     className={`py-2 text-right ${
@@ -267,6 +396,42 @@ export default function InvestmentsPage() {
           </table>
         </div>
       </div>
+
+      {/* Dividend history */}
+      {dividendStats.dividends.length > 0 && (
+        <div className="card">
+          <h2 className="text-lg font-semibold text-white mb-4">
+            Dividend History
+          </h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[var(--muted)] border-b border-[var(--card-border)]">
+                  <th className="pb-2 pr-4">Date</th>
+                  <th className="pb-2 pr-4">Details</th>
+                  <th className="pb-2 text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dividendStats.dividends.map((tx) => (
+                  <tr
+                    key={tx.id}
+                    className="border-b border-[var(--card-border)]/50 hover:bg-white/5"
+                  >
+                    <td className="py-2 pr-4 text-[var(--muted)]">
+                      {formatDate(tx.date)}
+                    </td>
+                    <td className="py-2 pr-4 text-white">{tx.detail}</td>
+                    <td className="py-2 text-right positive">
+                      +{formatCurrency(tx.amount, "USD")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Transaction history */}
       {etoroTransactions.length > 0 && (
@@ -286,7 +451,7 @@ export default function InvestmentsPage() {
                 </tr>
               </thead>
               <tbody>
-                {etoroTransactions.slice(0, 50).map((tx) => (
+                {paginatedTxs.map((tx) => (
                   <tr
                     key={tx.id}
                     className="border-b border-[var(--card-border)]/50 hover:bg-white/5"
@@ -303,7 +468,8 @@ export default function InvestmentsPage() {
                         tx.amount >= 0 ? "positive" : "negative"
                       }`}
                     >
-                      {formatCurrency(tx.amount, "USD")}
+                      {tx.amount >= 0 ? "▲ " : "▼ "}
+                      {formatCurrency(Math.abs(tx.amount), "USD")}
                     </td>
                     <td className="py-2 text-right">
                       {formatCurrency(tx.balance, "USD")}
@@ -313,6 +479,13 @@ export default function InvestmentsPage() {
               </tbody>
             </table>
           </div>
+          <Pagination
+            currentPage={txPage}
+            totalPages={totalTxPages}
+            onPageChange={setTxPage}
+            totalItems={etoroTransactions.length}
+            pageSize={PAGE_SIZE}
+          />
         </div>
       )}
     </div>

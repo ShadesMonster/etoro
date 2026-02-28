@@ -20,6 +20,12 @@ import StatCard from "@/components/StatCard";
 export default function RetirementPage() {
   const { retirementFunds } = useFinanceStore();
 
+  // Group by fund name
+  const fundNames = useMemo(() => {
+    const names = new Set(retirementFunds.map((f) => f.fundName));
+    return Array.from(names);
+  }, [retirementFunds]);
+
   const stats = useMemo(() => {
     if (retirementFunds.length === 0) {
       return {
@@ -40,9 +46,9 @@ export default function RetirementPage() {
     const employerContributions = latest.employerContributions;
     const totalGrowth = latest.growthAmount;
     const totalInvested = totalContributions + employerContributions;
-    const growthPercent = totalInvested > 0 ? (totalGrowth / totalInvested) * 100 : 0;
+    const growthPercent =
+      totalInvested > 0 ? (totalGrowth / totalInvested) * 100 : 0;
 
-    // Chart data - fund value over time
     const chartData = [...retirementFunds]
       .sort((a, b) => a.date.localeCompare(b.date))
       .map((f) => ({
@@ -50,7 +56,6 @@ export default function RetirementPage() {
         "Fund Value": f.totalValue,
       }));
 
-    // Contribution breakdown
     const contributionData = [...retirementFunds]
       .sort((a, b) => a.date.localeCompare(b.date))
       .map((f) => ({
@@ -90,9 +95,18 @@ export default function RetirementPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-white">Retirement Fund</h1>
-        {stats.fundName && (
-          <span className="text-sm text-[var(--muted)]">{stats.fundName}</span>
-        )}
+        <div className="flex gap-2 items-center">
+          {fundNames.length > 1 && (
+            <span className="text-sm text-[var(--muted)]">
+              {fundNames.length} funds
+            </span>
+          )}
+          {stats.fundName && (
+            <span className="text-sm text-[var(--muted)]">
+              {stats.fundName}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Stats */}
@@ -127,7 +141,11 @@ export default function RetirementPage() {
           <ResponsiveContainer width="100%" height={300}>
             <AreaChart data={stats.chartData}>
               <XAxis dataKey="date" stroke="#6b7280" fontSize={12} />
-              <YAxis stroke="#6b7280" fontSize={12} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
+              <YAxis
+                stroke="#6b7280"
+                fontSize={12}
+                tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`}
+              />
               <Tooltip
                 contentStyle={{
                   background: "#1e1e2e",
@@ -148,7 +166,9 @@ export default function RetirementPage() {
             </AreaChart>
           </ResponsiveContainer>
         ) : (
-          <p className="text-[var(--muted)] text-sm">Not enough data points.</p>
+          <p className="text-[var(--muted)] text-sm">
+            Not enough data points.
+          </p>
         )}
       </div>
 
@@ -161,7 +181,11 @@ export default function RetirementPage() {
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={stats.contributionData}>
               <XAxis dataKey="date" stroke="#6b7280" fontSize={12} />
-              <YAxis stroke="#6b7280" fontSize={12} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
+              <YAxis
+                stroke="#6b7280"
+                fontSize={12}
+                tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`}
+              />
               <Tooltip
                 contentStyle={{
                   background: "#1e1e2e",
@@ -236,7 +260,8 @@ export default function RetirementPage() {
                       f.growthAmount >= 0 ? "positive" : "negative"
                     }`}
                   >
-                    {formatCurrency(f.growthAmount)}
+                    {f.growthAmount >= 0 ? "▲ " : "▼ "}
+                    {formatCurrency(Math.abs(f.growthAmount))}
                   </td>
                 </tr>
               ))}

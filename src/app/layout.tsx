@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import Nav from "@/components/Nav";
+import ToastContainer from "@/components/Toast";
 
 export const metadata: Metadata = {
   title: "FinTracker - Spending & Investment Tracker",
@@ -18,6 +19,7 @@ export default function RootLayout({
       <body>
         <Nav />
         <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">{children}</main>
+        <ToastContainer />
       </body>
     </html>
   );

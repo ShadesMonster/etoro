@@ -52,6 +52,21 @@ export const CATEGORY_COLORS: Record<SpendingCategory, string> = {
   other: "#9ca3af",
 };
 
+export const ALL_CATEGORIES: SpendingCategory[] = [
+  "groceries",
+  "eating-out",
+  "transport",
+  "bills",
+  "shopping",
+  "entertainment",
+  "health",
+  "transfers",
+  "income",
+  "cash",
+  "subscriptions",
+  "other",
+];
+
 export interface EtoroPosition {
   id: string;
   instrument: string;
@@ -61,7 +76,9 @@ export interface EtoroPosition {
   profit: number;
   profitPercent: number;
   openDate: string;
+  closeDate?: string;
   type: "buy" | "sell";
+  status?: "open" | "closed";
 }
 
 export interface EtoroTransaction {
@@ -89,4 +106,29 @@ export interface NetWorthSnapshot {
   investmentValue: number;
   retirementValue: number;
   total: number;
+}
+
+export interface Budget {
+  id: string;
+  category: SpendingCategory;
+  monthlyLimit: number;
+}
+
+export interface UserSettings {
+  preferredCurrency: "GBP" | "USD";
+  exchangeRateGBPtoUSD: number;
+  exchangeRateUSDtoGBP: number;
+}
+
+export interface ParseResult<T> {
+  data: T[];
+  warnings: string[];
+}
+
+export interface RecurringTransaction {
+  description: string;
+  averageAmount: number;
+  frequency: "weekly" | "monthly" | "quarterly";
+  lastDate: string;
+  count: number;
 }

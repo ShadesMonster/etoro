@@ -1,5 +1,11 @@
 import Papa from "papaparse";
-import { Transaction, EtoroPosition, EtoroTransaction, RetirementFund } from "./types";
+import {
+  Transaction,
+  EtoroPosition,
+  EtoroTransaction,
+  RetirementFund,
+  ParseResult,
+} from "./types";
 import { categorizeTransaction } from "./categorize";
 
 let idCounter = 0;
@@ -8,29 +14,42 @@ function genId(prefix: string) {
 }
 
 // ─── Barclays CSV Parser ─────────────────────────────────────────────────────
-// Barclays exports typically have columns:
-// Number, Date, Account, Amount, Subcategory, Memo
-// OR: Date, Description, Money In, Money Out, Balance
-export function parseBarclaysCSV(csvText: string): Transaction[] {
+export function parseBarclaysCSV(csvText: string): ParseResult<Transaction> {
   const { data } = Papa.parse<Record<string, string>>(csvText, {
     header: true,
     skipEmptyLines: true,
     transformHeader: (h) => h.trim().toLowerCase(),
   });
 
+  const warnings: string[] = [];
   const transactions: Transaction[] = [];
+  let skipped = 0;
+
+  const headers = data.length > 0 ? Object.keys(data[0]) : [];
+  const hasDate = headers.includes("date");
+  const hasAmount = headers.includes("amount");
+  const hasMoneyIn = headers.includes("money in");
+
+  if (!hasDate)
+    warnings.push(`Column "Date" not found. Found columns: ${headers.join(", ")}`);
+  if (!hasAmount && !hasMoneyIn)
+    warnings.push(
+      `Neither "Amount" nor "Money In/Money Out" columns found. Found: ${headers.join(", ")}`
+    );
 
   for (const row of data) {
-    // Try to detect which format we're dealing with
     const date = row["date"] || "";
-    const description = row["memo"] || row["description"] || row["subcategory"] || "";
+    const description =
+      row["memo"] || row["description"] || row["subcategory"] || "";
     let amount = 0;
 
     if (row["amount"]) {
       amount = parseFloat(row["amount"].replace(/[£,]/g, "")) || 0;
     } else if (row["money in"] || row["money out"]) {
-      const moneyIn = parseFloat((row["money in"] || "0").replace(/[£,]/g, "")) || 0;
-      const moneyOut = parseFloat((row["money out"] || "0").replace(/[£,]/g, "")) || 0;
+      const moneyIn =
+        parseFloat((row["money in"] || "0").replace(/[£,]/g, "")) || 0;
+      const moneyOut =
+        parseFloat((row["money out"] || "0").replace(/[£,]/g, "")) || 0;
       amount = moneyIn > 0 ? moneyIn : -moneyOut;
     }
 
@@ -38,7 +57,10 @@ export function parseBarclaysCSV(csvText: string): Transaction[] {
       ? parseFloat(row["balance"].replace(/[£,]/g, "")) || undefined
       : undefined;
 
-    if (!date || (!amount && amount !== 0)) continue;
+    if (!date || (!amount && amount !== 0)) {
+      skipped++;
+      continue;
+    }
 
     const parsedDate = parseUKDate(date);
 
@@ -53,42 +75,83 @@ export function parseBarclaysCSV(csvText: string): Transaction[] {
     });
   }
 
-  return transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  if (skipped > 0)
+    warnings.push(`${skipped} rows skipped (missing date or amount)`);
+
+  return {
+    data: transactions.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    ),
+    warnings,
+  };
 }
 
-// ─── eToro CSV Parser ────────────────────────────────────────────────────────
-// eToro Account Statement has multiple sheets. The main ones:
-// Closed Positions: Action, Amount, Units, Open Rate, Close Rate, Spread, Profit, Open Date, Close Date
-// Transactions: Date, Account Balance, Type, Details, Amount, Realized Equity Change, Realized Equity, NWA
-export function parseEtoroPositionsCSV(csvText: string): EtoroPosition[] {
+// ─── eToro Positions CSV Parser ──────────────────────────────────────────────
+export function parseEtoroPositionsCSV(
+  csvText: string
+): ParseResult<EtoroPosition> {
   const { data } = Papa.parse<Record<string, string>>(csvText, {
     header: true,
     skipEmptyLines: true,
     transformHeader: (h) => h.trim().toLowerCase(),
   });
 
+  const warnings: string[] = [];
   const positions: EtoroPosition[] = [];
+
+  const headers = data.length > 0 ? Object.keys(data[0]) : [];
+
+  const hasInstrument = headers.some((h) =>
+    ["action", "instrument name", "instrument"].includes(h)
+  );
+  const hasUnits = headers.includes("units");
+  const hasOpenRate = headers.some((h) =>
+    ["open rate", "open price"].includes(h)
+  );
+  const hasCloseRate = headers.some((h) =>
+    ["close rate", "close price", "current rate"].includes(h)
+  );
+  const hasProfit = headers.some((h) => ["profit", "p/l"].includes(h));
+
+  if (!hasInstrument)
+    warnings.push(
+      `Instrument column not found. Expected "Action", "Instrument Name", or "Instrument". Found: ${headers.join(", ")}`
+    );
+  if (!hasUnits)
+    warnings.push(`"Units" column not found. Found: ${headers.join(", ")}`);
+  if (!hasOpenRate)
+    warnings.push(
+      `Open price column not found. Expected "Open Rate" or "Open Price". Found: ${headers.join(", ")}`
+    );
+  if (!hasCloseRate)
+    warnings.push(
+      `Close price column not found. Expected "Close Rate", "Close Price", or "Current Rate". Found: ${headers.join(", ")}`
+    );
+  if (!hasProfit)
+    warnings.push(
+      `Profit column not found. Expected "Profit" or "P/L". Found: ${headers.join(", ")}`
+    );
+
+  let zeroCount = 0;
 
   for (const row of data) {
     const instrument =
       row["action"] || row["instrument name"] || row["instrument"] || "";
-    const units = parseFloat(row["units"] || "0") || 0;
-    const openRate =
-      parseFloat((row["open rate"] || row["open price"] || "0").replace(/[,$]/g, "")) || 0;
-    const closeRate =
-      parseFloat(
-        (row["close rate"] || row["close price"] || row["current rate"] || "0").replace(
-          /[,$]/g,
-          ""
-        )
-      ) || 0;
-    const profit =
-      parseFloat((row["profit"] || row["p/l"] || "0").replace(/[,$]/g, "")) || 0;
+    const units = parseNum(row["units"]);
+    const openRate = parseNum(row["open rate"] || row["open price"]);
+    const closeRate = parseNum(
+      row["close rate"] || row["close price"] || row["current rate"]
+    );
+    const profit = parseNum(row["profit"] || row["p/l"]);
     const openDate = row["open date"] || row["date"] || "";
+    const closeDate = row["close date"] || "";
 
     if (!instrument) continue;
 
-    const isBuy = instrument.toLowerCase().startsWith("buy") ||
+    if (units === 0 && openRate === 0 && closeRate === 0) zeroCount++;
+
+    const isBuy =
+      instrument.toLowerCase().startsWith("buy") ||
       row["type"]?.toLowerCase() === "buy";
 
     positions.push({
@@ -98,35 +161,65 @@ export function parseEtoroPositionsCSV(csvText: string): EtoroPosition[] {
       openRate,
       currentRate: closeRate,
       profit,
-      profitPercent: openRate > 0 ? ((closeRate - openRate) / openRate) * 100 : 0,
+      profitPercent:
+        openRate > 0 ? ((closeRate - openRate) / openRate) * 100 : 0,
       openDate: openDate ? parseFlexibleDate(openDate) : "",
+      closeDate: closeDate ? parseFlexibleDate(closeDate) : undefined,
       type: isBuy ? "buy" : "sell",
+      status: closeDate ? "closed" : "open",
     });
   }
 
-  return positions;
+  if (zeroCount > 0)
+    warnings.push(
+      `${zeroCount} positions had all zero values (units, open rate, close rate). Your CSV column headers may not match the expected format.`
+    );
+
+  return { data: positions, warnings };
 }
 
-export function parseEtoroTransactionsCSV(csvText: string): EtoroTransaction[] {
+// ─── eToro Transactions CSV Parser ───────────────────────────────────────────
+export function parseEtoroTransactionsCSV(
+  csvText: string
+): ParseResult<EtoroTransaction> {
   const { data } = Papa.parse<Record<string, string>>(csvText, {
     header: true,
     skipEmptyLines: true,
     transformHeader: (h) => h.trim().toLowerCase(),
   });
 
+  const warnings: string[] = [];
   const transactions: EtoroTransaction[] = [];
+  let skipped = 0;
+
+  const headers = data.length > 0 ? Object.keys(data[0]) : [];
+  const hasDate = headers.includes("date");
+  const hasType = headers.includes("type");
+  const hasBalance = headers.some((h) =>
+    ["account balance", "balance"].includes(h)
+  );
+
+  if (!hasDate)
+    warnings.push(`"Date" column not found. Found: ${headers.join(", ")}`);
+  if (!hasType)
+    warnings.push(`"Type" column not found. Found: ${headers.join(", ")}`);
+  if (!hasBalance)
+    warnings.push(
+      `Balance column not found. Expected "Account Balance" or "Balance". Found: ${headers.join(", ")}`
+    );
 
   for (const row of data) {
     const date = row["date"] || "";
     const type = row["type"] || "";
     const detail = row["details"] || row["detail"] || "";
-    const amount = parseFloat((row["amount"] || "0").replace(/[,$]/g, "")) || 0;
-    const realizedEquityChange =
-      parseFloat((row["realized equity change"] || "0").replace(/[,$]/g, "")) || 0;
-    const balance =
-      parseFloat((row["account balance"] || row["balance"] || "0").replace(/[,$]/g, "")) || 0;
+    const amount = parseNum(row["amount"]);
+    const realizedEquityChange = parseNum(row["realized equity change"]);
+    const balance = parseNum(row["account balance"] || row["balance"]);
 
-    if (!date) continue;
+    if (!date) {
+      skipped++;
+      continue;
+    }
 
     transactions.push({
       id: genId("etoro-tx"),
@@ -139,48 +232,66 @@ export function parseEtoroTransactionsCSV(csvText: string): EtoroTransaction[] {
     });
   }
 
-  return transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  if (skipped > 0) warnings.push(`${skipped} rows skipped (missing date)`);
+
+  return {
+    data: transactions.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    ),
+    warnings,
+  };
 }
 
 // ─── Standard Life CSV Parser ────────────────────────────────────────────────
-// Standard Life statements vary, but common columns:
-// Date, Fund Name, Total Value, Your Contributions, Employer Contributions, Growth
-export function parseStandardLifeCSV(csvText: string): RetirementFund[] {
+export function parseStandardLifeCSV(
+  csvText: string
+): ParseResult<RetirementFund> {
   const { data } = Papa.parse<Record<string, string>>(csvText, {
     header: true,
     skipEmptyLines: true,
     transformHeader: (h) => h.trim().toLowerCase(),
   });
 
+  const warnings: string[] = [];
   const funds: RetirementFund[] = [];
+  let skipped = 0;
+
+  const headers = data.length > 0 ? Object.keys(data[0]) : [];
+  const hasDate = headers.some((h) => ["date", "valuation date"].includes(h));
+  const hasValue = headers.some((h) =>
+    ["total value", "fund value", "value"].includes(h)
+  );
+
+  if (!hasDate)
+    warnings.push(`Date column not found. Found: ${headers.join(", ")}`);
+  if (!hasValue)
+    warnings.push(
+      `Value column not found. Expected "Total Value", "Fund Value", or "Value". Found: ${headers.join(", ")}`
+    );
 
   for (const row of data) {
     const date = row["date"] || row["valuation date"] || "";
-    const fundName = row["fund name"] || row["fund"] || row["plan name"] || "Pension Fund";
-    const totalValue =
-      parseFloat(
-        (row["total value"] || row["fund value"] || row["value"] || "0").replace(/[£,]/g, "")
-      ) || 0;
-    const contributions =
-      parseFloat(
-        (row["your contributions"] || row["member contributions"] || row["contributions"] || "0").replace(
-          /[£,]/g,
-          ""
-        )
-      ) || 0;
-    const employerContributions =
-      parseFloat(
-        (row["employer contributions"] || row["employer"] || "0").replace(/[£,]/g, "")
-      ) || 0;
-    const growthAmount =
-      parseFloat(
-        (row["growth"] || row["growth amount"] || row["investment growth"] || "0").replace(
-          /[£,]/g,
-          ""
-        )
-      ) || 0;
+    const fundName =
+      row["fund name"] || row["fund"] || row["plan name"] || "Pension Fund";
+    const totalValue = parseNum(
+      row["total value"] || row["fund value"] || row["value"]
+    );
+    const contributions = parseNum(
+      row["your contributions"] ||
+        row["member contributions"] ||
+        row["contributions"]
+    );
+    const employerContributions = parseNum(
+      row["employer contributions"] || row["employer"]
+    );
+    const growthAmount = parseNum(
+      row["growth"] || row["growth amount"] || row["investment growth"]
+    );
 
-    if (!date) continue;
+    if (!date) {
+      skipped++;
+      continue;
+    }
 
     funds.push({
       date: parseFlexibleDate(date),
@@ -192,7 +303,14 @@ export function parseStandardLifeCSV(csvText: string): RetirementFund[] {
     });
   }
 
-  return funds.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  if (skipped > 0) warnings.push(`${skipped} rows skipped (missing date)`);
+
+  return {
+    data: funds.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    ),
+    warnings,
+  };
 }
 
 // ─── Detect file type ────────────────────────────────────────────────────────
@@ -238,7 +356,6 @@ export function detectFileType(csvText: string): FileType {
     return "standard-life";
   }
 
-  // Fallback heuristic: if it has Amount + Date + Memo/Description, likely Barclays
   if (headerLine.includes("amount") && headerLine.includes("date")) {
     return "barclays";
   }
@@ -246,9 +363,13 @@ export function detectFileType(csvText: string): FileType {
   return "unknown";
 }
 
-// ─── Date helpers ────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function parseNum(val: string | undefined): number {
+  if (!val) return 0;
+  return parseFloat(val.replace(/[£$,\s]/g, "")) || 0;
+}
+
 function parseUKDate(dateStr: string): string {
-  // Handle DD/MM/YYYY format
   const parts = dateStr.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
   if (parts) {
     const day = parts[1].padStart(2, "0");
@@ -260,12 +381,10 @@ function parseUKDate(dateStr: string): string {
 }
 
 function parseFlexibleDate(dateStr: string): string {
-  // Try ISO format first
   if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
     return dateStr.slice(0, 10);
   }
 
-  // Try DD/MM/YYYY
   const ukMatch = dateStr.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
   if (ukMatch) {
     const day = ukMatch[1].padStart(2, "0");
@@ -274,7 +393,6 @@ function parseFlexibleDate(dateStr: string): string {
     return `${year}-${month}-${day}`;
   }
 
-  // Try MM/DD/YYYY (US format from eToro)
   const d = new Date(dateStr);
   if (!isNaN(d.getTime())) {
     return d.toISOString().slice(0, 10);

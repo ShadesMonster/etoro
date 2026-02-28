@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { useFinanceStore } from "@/lib/store";
+import { useToastStore } from "@/lib/toast";
 import {
   detectFileType,
   parseBarclaysCSV,
@@ -11,7 +12,7 @@ import {
 } from "@/lib/parsers";
 
 export default function FileUpload() {
-  const [status, setStatus] = useState<string>("");
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const {
     addTransactions,
@@ -19,6 +20,7 @@ export default function FileUpload() {
     addEtoroTransactions,
     addRetirementFunds,
   } = useFinanceStore();
+  const addToast = useToastStore((s) => s.addToast);
 
   const processFile = useCallback(
     async (file: File) => {
@@ -27,41 +29,47 @@ export default function FileUpload() {
 
       switch (fileType) {
         case "barclays": {
-          const txs = parseBarclaysCSV(text);
-          addTransactions(txs);
-          setStatus(`Imported ${txs.length} Barclays transactions`);
+          const result = parseBarclaysCSV(text);
+          addTransactions(result.data);
+          addToast(`Imported ${result.data.length} Barclays transactions`, "success");
+          if (result.warnings.length > 0) setWarnings((w) => [...w, ...result.warnings]);
           break;
         }
         case "etoro-positions": {
-          const positions = parseEtoroPositionsCSV(text);
-          addEtoroPositions(positions);
-          setStatus(`Imported ${positions.length} eToro positions`);
+          const result = parseEtoroPositionsCSV(text);
+          addEtoroPositions(result.data);
+          addToast(`Imported ${result.data.length} eToro positions`, "success");
+          if (result.warnings.length > 0) setWarnings((w) => [...w, ...result.warnings]);
           break;
         }
         case "etoro-transactions": {
-          const txs = parseEtoroTransactionsCSV(text);
-          addEtoroTransactions(txs);
-          setStatus(`Imported ${txs.length} eToro transactions`);
+          const result = parseEtoroTransactionsCSV(text);
+          addEtoroTransactions(result.data);
+          addToast(`Imported ${result.data.length} eToro transactions`, "success");
+          if (result.warnings.length > 0) setWarnings((w) => [...w, ...result.warnings]);
           break;
         }
         case "standard-life": {
-          const funds = parseStandardLifeCSV(text);
-          addRetirementFunds(funds);
-          setStatus(`Imported ${funds.length} Standard Life records`);
+          const result = parseStandardLifeCSV(text);
+          addRetirementFunds(result.data);
+          addToast(`Imported ${result.data.length} Standard Life records`, "success");
+          if (result.warnings.length > 0) setWarnings((w) => [...w, ...result.warnings]);
           break;
         }
         default:
-          setStatus(
-            `Could not detect file type for "${file.name}". Check the CSV headers match a supported format.`
+          addToast(
+            `Could not detect file type for "${file.name}". Check the CSV headers.`,
+            "error"
           );
       }
     },
-    [addTransactions, addEtoroPositions, addEtoroTransactions, addRetirementFunds]
+    [addTransactions, addEtoroPositions, addEtoroTransactions, addRetirementFunds, addToast]
   );
 
   const handleFiles = useCallback(
     (files: FileList | null) => {
       if (!files) return;
+      setWarnings([]);
       Array.from(files).forEach((file) => processFile(file));
     },
     [processFile]
@@ -99,7 +107,7 @@ export default function FileUpload() {
           input.click();
         }}
       >
-        <div className="text-4xl mb-3 opacity-50">&#x1F4C1;</div>
+        <p className="text-4xl mb-3 opacity-50">+</p>
         <p className="text-lg font-medium mb-1">
           Drop CSV files here or click to browse
         </p>
@@ -109,9 +117,31 @@ export default function FileUpload() {
         </p>
       </div>
 
-      {status && (
-        <div className="card text-sm">
-          <p>{status}</p>
+      {/* Parse warnings */}
+      {warnings.length > 0 && (
+        <div
+          className="card text-sm space-y-1"
+          style={{
+            background: "rgba(234, 179, 8, 0.08)",
+            borderColor: "rgba(234, 179, 8, 0.3)",
+          }}
+        >
+          <div className="flex items-center justify-between mb-2">
+            <p className="font-semibold" style={{ color: "#eab308" }}>
+              Parser Warnings
+            </p>
+            <button
+              onClick={() => setWarnings([])}
+              className="text-xs text-[var(--muted)] hover:text-white"
+            >
+              Dismiss
+            </button>
+          </div>
+          {warnings.map((w, i) => (
+            <p key={i} className="text-[var(--muted)]">
+              {w}
+            </p>
+          ))}
         </div>
       )}
 
@@ -119,24 +149,23 @@ export default function FileUpload() {
         <div className="card">
           <h3 className="font-semibold mb-2 text-white">Barclays</h3>
           <p className="text-[var(--muted)]">
-            Export from Barclays Online Banking &rarr; Statements &rarr; Export
-            as CSV. Expected columns: Date, Description, Money In, Money Out,
-            Balance.
+            Export from Barclays Online Banking. Expected columns: Date,
+            Description, Money In, Money Out, Balance.
           </p>
         </div>
         <div className="card">
           <h3 className="font-semibold mb-2 text-white">eToro</h3>
           <p className="text-[var(--muted)]">
-            Download your Account Statement from eToro &rarr; Portfolio &rarr;
-            History &rarr; Account Statement. Upload the Closed Positions or
-            Transactions CSV.
+            Download Account Statement from eToro. Export the Closed Positions
+            and Transactions sheets as separate CSVs. Expected columns: Action,
+            Units, Open Rate, Close Rate, Profit.
           </p>
         </div>
         <div className="card">
           <h3 className="font-semibold mb-2 text-white">Standard Life</h3>
           <p className="text-[var(--muted)]">
-            Export valuation history from your Standard Life online account.
-            Expected columns: Date, Fund Name, Total Value, Contributions.
+            Export valuation history. Expected columns: Date, Fund Name, Total
+            Value, Contributions, Employer Contributions.
           </p>
         </div>
       </div>
