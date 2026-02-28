@@ -139,6 +139,10 @@ interface FinanceStore {
   dismissedAlerts: string[];
   dismissAlert: (id: string) => void;
   clearDismissedAlerts: () => void;
+  // Instrument name → ticker symbol mappings (for live price lookups)
+  tickerMappings: Record<string, string>;
+  setTickerMapping: (instrument: string, ticker: string) => void;
+  setTickerMappings: (mappings: Record<string, string>) => void;
   settings: UserSettings;
   updateSettings: (settings: Partial<UserSettings>) => void;
   removeTransactions: (ids: string[]) => void;
@@ -218,6 +222,11 @@ export const useFinanceStore = create<FinanceStore>()(
       dismissAlert: (id) =>
         set((s) => ({ dismissedAlerts: [...s.dismissedAlerts, id] })),
       clearDismissedAlerts: () => set({ dismissedAlerts: [] }),
+      tickerMappings: {},
+      setTickerMapping: (instrument, ticker) =>
+        set((s) => ({ tickerMappings: { ...s.tickerMappings, [instrument]: ticker } })),
+      setTickerMappings: (mappings) =>
+        set((s) => ({ tickerMappings: { ...s.tickerMappings, ...mappings } })),
       settings: DEFAULT_SETTINGS,
       updateSettings: (partial) =>
         set((s) => ({ settings: { ...s.settings, ...partial } })),
@@ -237,7 +246,7 @@ export const useFinanceStore = create<FinanceStore>()(
           etoroDividends: [], retirementFunds: [], categoryOverrides: {},
           categoryRules: [], budgets: [], savingsGoals: [], debts: [],
           dashboardWidgets: DEFAULT_WIDGETS, dismissedAlerts: [],
-          settings: DEFAULT_SETTINGS,
+          tickerMappings: {}, settings: DEFAULT_SETTINGS,
         }),
       exportData: () => {
         const s = get();
@@ -247,7 +256,8 @@ export const useFinanceStore = create<FinanceStore>()(
           retirementFunds: s.retirementFunds,
           categoryOverrides: s.categoryOverrides, categoryRules: s.categoryRules,
           budgets: s.budgets, savingsGoals: s.savingsGoals, debts: s.debts,
-          dashboardWidgets: s.dashboardWidgets, settings: s.settings,
+          dashboardWidgets: s.dashboardWidgets, tickerMappings: s.tickerMappings,
+          settings: s.settings,
         });
       },
       importData: (json) => {
@@ -261,6 +271,7 @@ export const useFinanceStore = create<FinanceStore>()(
             categoryOverrides: d.categoryOverrides || {}, categoryRules: d.categoryRules || [],
             budgets: d.budgets || [], savingsGoals: d.savingsGoals || [],
             debts: d.debts || [], dashboardWidgets: d.dashboardWidgets || DEFAULT_WIDGETS,
+            tickerMappings: d.tickerMappings || {},
             settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}) },
           });
           return true;

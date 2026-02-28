@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import {
   BarChart,
   Bar,
@@ -20,6 +20,7 @@ import { useFinanceStore } from "@/lib/store";
 import { formatCurrency, formatDate, formatPercent } from "@/lib/utils";
 import StatCard from "@/components/StatCard";
 import Pagination from "@/components/Pagination";
+import { useLivePrices } from "@/lib/use-live-prices";
 
 const COLORS = [
   "#6366f1", "#22c55e", "#f97316", "#ec4899", "#14b8a6",
@@ -36,6 +37,9 @@ export default function InvestmentsPage() {
   const [txPage, setTxPage] = useState(1);
 
   const hasData = etoroPositions.length > 0 || etoroTransactions.length > 0 || etoroDividends.length > 0;
+
+  // Live prices from Yahoo Finance
+  const { prices: livePrices, unmapped, loading: pricesLoading, error: pricesError, lastUpdated, fetchPrices } = useLivePrices();
 
   // Filter positions by status
   const filteredPositions = useMemo(() => {
@@ -129,12 +133,57 @@ export default function InvestmentsPage() {
       .map(([posId, data]) => ({ positionId: posId, ...data }));
   }, [etoroTransactions]);
 
+  // Auto-fetch live prices for derived open positions
+  const derivedInstrumentNames = useMemo(
+    () => [...new Set(derivedOpenPositions.map((p) => p.instrument))],
+    [derivedOpenPositions]
+  );
+
+  const handleRefreshPrices = useCallback(() => {
+    if (derivedInstrumentNames.length > 0) {
+      fetchPrices(derivedInstrumentNames);
+    }
+  }, [derivedInstrumentNames, fetchPrices]);
+
+  // Fetch on first load
+  const [hasFetchedOnce, setHasFetchedOnce] = useState(false);
+  useEffect(() => {
+    if (!hasFetchedOnce && derivedInstrumentNames.length > 0) {
+      setHasFetchedOnce(true);
+      fetchPrices(derivedInstrumentNames);
+    }
+  }, [hasFetchedOnce, derivedInstrumentNames, fetchPrices]);
+
   // Use CSV open positions if available, otherwise use derived ones
   const hasOpenFromCSV = openPositionsFromCSV.length > 0;
   const openPositionCount = hasOpenFromCSV ? openPositionsFromCSV.length : derivedOpenPositions.length;
   const openPositionsCostBasis = hasOpenFromCSV
     ? openPositionsFromCSV.reduce((sum, p) => sum + p.units * p.openRate, 0)
     : derivedOpenPositions.reduce((sum, p) => sum + p.amount, 0);
+
+  // Calculate live value of derived open positions using market prices
+  const livePriceData = useMemo(() => {
+    if (Object.keys(livePrices).length === 0 || derivedOpenPositions.length === 0) {
+      return { liveValue: 0, hasLivePrices: false, priceCount: 0 };
+    }
+
+    // For derived positions, we only know the $ amount invested, not units.
+    // We can't directly compute units * livePrice. But we CAN compute the
+    // aggregate value by instrument: total invested × (currentPrice / avgBuyPrice).
+    // However we don't know avgBuyPrice per instrument from transactions alone.
+    //
+    // Simpler approach: count how many instruments we have prices for.
+    // The actual portfolio value is still best derived from: deposits - withdrawals + P/L.
+    // But we can show unrealized P/L change since open by tracking live price changes.
+    //
+    // For now: just count matched prices so we can show them in the holdings table.
+    let priceCount = 0;
+    for (const name of derivedInstrumentNames) {
+      if (livePrices[name]) priceCount++;
+    }
+
+    return { liveValue: 0, hasLivePrices: priceCount > 0, priceCount };
+  }, [livePrices, derivedOpenPositions, derivedInstrumentNames]);
 
   // Derive portfolio metrics from all available data
   const portfolio = useMemo(() => {
@@ -364,21 +413,48 @@ export default function InvestmentsPage() {
         />
       </div>
 
-      {/* Open positions derived from transactions */}
+      {/* Open positions derived from transactions - with live prices */}
       {!portfolio.hasOpenFromCSV && derivedOpenPositions.length > 0 && (
         <div className="card">
-          <h2 className="text-lg font-semibold text-white mb-3">
-            Current Holdings ({derivedOpenPositions.length} open positions)
-          </h2>
-          <p className="text-xs text-[var(--muted)] mb-3">
-            Derived from account activity. Values shown at cost basis (no live prices without eToro API).
-          </p>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold text-white">
+              Current Holdings ({derivedOpenPositions.length} open positions)
+            </h2>
+            <button
+              onClick={handleRefreshPrices}
+              disabled={pricesLoading}
+              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-[var(--accent)] text-white hover:bg-[var(--accent)]/80 disabled:opacity-50 transition-colors"
+            >
+              {pricesLoading ? "Fetching..." : "Refresh Prices"}
+            </button>
+          </div>
+          {pricesError && (
+            <p className="text-xs text-red-400 mb-2">Price fetch error: {pricesError}</p>
+          )}
+          {lastUpdated && (
+            <p className="text-xs text-[var(--muted)] mb-3">
+              Live prices from Yahoo Finance. Updated {lastUpdated.toLocaleTimeString()}.
+              {livePriceData.priceCount > 0 && ` Matched ${livePriceData.priceCount}/${derivedInstrumentNames.length} instruments.`}
+              {unmapped.length > 0 && ` ${unmapped.length} unresolved.`}
+            </p>
+          )}
+          {!lastUpdated && (
+            <p className="text-xs text-[var(--muted)] mb-3">
+              Derived from account activity. Click &quot;Refresh Prices&quot; for live market data.
+            </p>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-[var(--muted)] border-b border-[var(--card-border)]">
                   <th className="pb-2 pr-4">Instrument</th>
-                  <th className="pb-2 pr-4 text-right">Amount Invested</th>
+                  <th className="pb-2 pr-4 text-right">Invested</th>
+                  {livePriceData.hasLivePrices && (
+                    <>
+                      <th className="pb-2 pr-4 text-right">Live Price</th>
+                      <th className="pb-2 pr-4 text-right">Day Change</th>
+                    </>
+                  )}
                   <th className="pb-2 text-right">Date Opened</th>
                 </tr>
               </thead>
@@ -386,16 +462,40 @@ export default function InvestmentsPage() {
                 {derivedOpenPositions
                   .sort((a, b) => b.amount - a.amount)
                   .slice(0, 50)
-                  .map((p) => (
-                    <tr
-                      key={p.positionId}
-                      className="border-b border-[var(--card-border)]/50 hover:bg-white/5"
-                    >
-                      <td className="py-2 pr-4 text-white font-medium">{p.instrument}</td>
-                      <td className="py-2 pr-4 text-right">{formatCurrency(p.amount, "USD")}</td>
-                      <td className="py-2 text-right text-[var(--muted)]">{formatDate(p.date)}</td>
-                    </tr>
-                  ))}
+                  .map((p) => {
+                    const lp = livePrices[p.instrument];
+                    return (
+                      <tr
+                        key={p.positionId}
+                        className="border-b border-[var(--card-border)]/50 hover:bg-white/5"
+                      >
+                        <td className="py-2 pr-4">
+                          <span className="text-white font-medium">{p.instrument}</span>
+                          {lp && (
+                            <span className="text-xs text-[var(--muted)] ml-2">{lp.symbol}</span>
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 text-right">{formatCurrency(p.amount, "USD")}</td>
+                        {livePriceData.hasLivePrices && (
+                          <>
+                            <td className="py-2 pr-4 text-right">
+                              {lp ? formatCurrency(lp.price, lp.currency) : <span className="text-[var(--muted)]">--</span>}
+                            </td>
+                            <td className={`py-2 pr-4 text-right ${lp ? (lp.changePercent >= 0 ? "positive" : "negative") : ""}`}>
+                              {lp ? (
+                                <>
+                                  {lp.changePercent >= 0 ? "+" : ""}{lp.changePercent.toFixed(2)}%
+                                </>
+                              ) : (
+                                <span className="text-[var(--muted)]">--</span>
+                              )}
+                            </td>
+                          </>
+                        )}
+                        <td className="py-2 text-right text-[var(--muted)]">{formatDate(p.date)}</td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
