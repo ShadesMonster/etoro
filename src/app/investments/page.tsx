@@ -371,35 +371,36 @@ export default function InvestmentsPage() {
         </div>
       </div>
 
-      {/* eToro API connection status */}
-      {(pricesError || pricesLoading || portfolio.hasApiData) && (
-        <div className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm ${
-          pricesError
-            ? "bg-red-500/10 border border-red-500/20"
+      {/* eToro API connection status - always visible */}
+      <div className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm ${
+        pricesError
+          ? "bg-red-500/10 border border-red-500/20"
+          : pricesLoading
+            ? "bg-yellow-500/10 border border-yellow-500/20"
+            : portfolio.hasApiData
+              ? "bg-green-500/10 border border-green-500/20"
+              : "bg-gray-500/10 border border-gray-500/20"
+      }`}>
+        <span className={`inline-block w-2 h-2 rounded-full ${
+          pricesError ? "bg-red-400" : pricesLoading ? "bg-yellow-400 animate-pulse" : portfolio.hasApiData ? "bg-green-400" : "bg-gray-400"
+        }`} />
+        <span className={pricesError ? "text-red-400" : pricesLoading ? "text-yellow-400" : portfolio.hasApiData ? "text-green-400" : "text-gray-400"}>
+          {pricesError
+            ? `eToro API error: ${pricesError}`
             : pricesLoading
-              ? "bg-yellow-500/10 border border-yellow-500/20"
-              : "bg-green-500/10 border border-green-500/20"
-        }`}>
-          <span className={`inline-block w-2 h-2 rounded-full ${
-            pricesError ? "bg-red-400" : pricesLoading ? "bg-yellow-400 animate-pulse" : "bg-green-400"
-          }`} />
-          <span className={pricesError ? "text-red-400" : pricesLoading ? "text-yellow-400" : "text-green-400"}>
-            {pricesError
-              ? `eToro API error: ${pricesError}`
-              : pricesLoading
-                ? "Connecting to eToro API..."
-                : `eToro API connected${lastUpdated ? ` · Updated ${lastUpdated.toLocaleTimeString()}` : ""}`}
-          </span>
-          {pricesError && (
-            <button
-              onClick={handleRefreshPrices}
-              className="ml-auto text-xs text-red-300 hover:text-white underline"
-            >
-              Retry
-            </button>
-          )}
-        </div>
-      )}
+              ? "Connecting to eToro API..."
+              : portfolio.hasApiData
+                ? `eToro API connected · Updated ${lastUpdated?.toLocaleTimeString() ?? ""}`
+                : "eToro API not connected"}
+        </span>
+        <button
+          onClick={handleRefreshPrices}
+          disabled={pricesLoading}
+          className="ml-auto text-xs text-[var(--muted)] hover:text-white underline disabled:opacity-50"
+        >
+          {pricesError ? "Retry" : pricesLoading ? "Connecting..." : portfolio.hasApiData ? "Refresh" : "Test Connection"}
+        </button>
+      </div>
 
       {/* Stats - matching eToro layout */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
