@@ -86,9 +86,7 @@ export function useLivePrices(): UseLivePricesResult {
         }
       }
 
-      console.log("[eToro API] Fetching portfolio...");
-
-      // Fetch portfolio
+      // Fetch portfolio from eToro API
       const portfolioRes = await fetch("/api/prices?action=portfolio");
 
       if (!portfolioRes.ok) {
@@ -105,268 +103,83 @@ export function useLivePrices(): UseLivePricesResult {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mirrors: any[] = cp?.mirrors ?? [];
 
-      // === COMPUTE FROM MIRROR-LEVEL SUMMARY DATA ===
-      // Each mirror has: depositSummary, withdrawalSummary, closedPositionsNetProfit,
-      // availableAmount, initialInvestment, positions[]
-      // Mirror positions have copier's real units, amount, and openRate.
-      // Portfolio value = totalAvailable + sum(position.units * currentPrice)
-
+      // Aggregate mirror-level financial summary
       let totalDeposited = 0;
       let totalWithdrawn = 0;
-      let totalClosedPL = 0;
       let totalAvailable = topCredit;
-      let totalOpenPositionCount = 0;
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mirrorSummaries: any[] = [];
 
       for (const m of mirrors) {
-        const dep = m.depositSummary ?? 0;
-        const wd = m.withdrawalSummary ?? 0;
-        const closedPL = m.closedPositionsNetProfit ?? 0;
-        const avail = m.availableAmount ?? 0;
-        const posCount = Array.isArray(m.positions) ? m.positions.length : 0;
-
-        totalDeposited += dep;
-        totalWithdrawn += wd;
-        totalClosedPL += closedPL;
-        totalAvailable += avail;
-        totalOpenPositionCount += posCount;
-
-        mirrorSummaries.push({
-          parentUsername: m.parentUsername,
-          depositSummary: dep,
-          withdrawalSummary: wd,
-          closedPL,
-          availableAmount: avail,
-          netCashIn: dep - wd,
-          openPositions: posCount,
-        });
-      }
-
-      // Add direct position amounts
-      for (const pos of directPositions) {
-        totalOpenPositionCount += 1;
+        totalDeposited += m.depositSummary ?? 0;
+        totalWithdrawn += m.withdrawalSummary ?? 0;
+        totalAvailable += m.availableAmount ?? 0;
       }
 
       const netDeposited = totalDeposited - totalWithdrawn;
 
-      console.log("[eToro API] Mirror summaries:", mirrorSummaries);
-      console.log("[eToro API] Totals:", {
-        topCredit,
-        totalDeposited,
-        totalWithdrawn,
-        netDeposited,
-        totalClosedPL,
-        totalAvailable,
-        totalOpenPositionCount,
-        directPositions: directPositions.length,
-        mirrors: mirrors.length,
-      });
-
-      // === DETERMINE PORTFOLIO VALUE ===
-      // Compute from positions (copier's real units) + live rates
+      // === COMPUTE PORTFOLIO VALUE FROM POSITIONS + LIVE RATES ===
+      // Each position has: units, openRate, amount, openConversionRate, isBuy
+      // positionEquity = amount + direction * units * (currentPrice - openRate) * openConversionRate
+      // openConversionRate converts from instrument currency to USD
+      // (e.g. 1.0 for USD instruments, ~0.0137 for GBP pence instruments)
       let netEquity: number | undefined;
       let totalPL: number | undefined;
       let totalPLPercent: number | undefined;
 
-      // If PnL endpoint didn't give us equity, compute from positions + rates
-      // Mirror positions have the COPIER's real data:
-      //   - units: copier's actual units (verified: units * openRate = amount)
-      //   - amount: copier's invested amount in dollars
-      //   - openRate: the price when position was opened
-      // Only the top-level direct position has zeros for openRate/amount.
-      if (netEquity === undefined) {
-        console.log("[eToro API] Computing equity from positions + live rates...");
-        const ratesRes = await fetch("/api/prices?action=rates").catch(() => null);
+      const ratesRes = await fetch("/api/prices?action=rates").catch(() => null);
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const ratesMap: Record<number, any> = {};
-        if (ratesRes && ratesRes.ok) {
-          const ratesData = await ratesRes.json();
-          const ratesArr = ratesData?.rates ?? (Array.isArray(ratesData) ? ratesData : []);
-          for (const r of ratesArr) {
-            const id = r.instrumentID ?? r.InstrumentID;
-            if (id !== undefined) ratesMap[id] = r;
-          }
-          console.log("[eToro API] Rates loaded:", Object.keys(ratesMap).length, "instruments");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ratesMap: Record<number, any> = {};
+      if (ratesRes && ratesRes.ok) {
+        const ratesData = await ratesRes.json();
+        const ratesArr = ratesData?.rates ?? (Array.isArray(ratesData) ? ratesData : []);
+        for (const r of ratesArr) {
+          const id = r.instrumentID ?? r.InstrumentID;
+          if (id !== undefined) ratesMap[id] = r;
         }
-
-        // Collect all positions from mirrors + direct
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const allOpenPositions: any[] = [];
-        for (const m of mirrors) {
-          if (Array.isArray(m.positions)) allOpenPositions.push(...m.positions);
-        }
-        allOpenPositions.push(...directPositions);
-
-        // === PER-MIRROR EQUITY COMPUTATION ===
-        // Compute equity per mirror to find where the discrepancy is
-        let totalPositionEquity = 0;
-        let totalCostBasis = 0;
-        let totalUnrealizedPL = 0;
-        let totalFees = 0;
-        let matched = 0;
-        let unmatched = 0;
-        let zeroOpenRate = 0;
-
-        // Helper to compute position equity
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const computePosEquity = (pos: any) => {
-          const rate = ratesMap[pos.instrumentID];
-          if (!rate || pos.units <= 0) return null;
-          const currentPrice = pos.isBuy
-            ? (rate.bid ?? rate.Bid ?? 0)
-            : (rate.ask ?? rate.Ask ?? 0);
-          if (currentPrice <= 0) return null;
-          const direction = pos.isBuy ? 1 : -1;
-          // CRITICAL: multiply by openConversionRate to convert from instrument currency to USD.
-          // For USD instruments, openConversionRate = 1. For GBP pence instruments, it's ~0.0137.
-          // Without this, GBP pence positions give UPL in pence (~73x too high).
-          const convRate = pos.openConversionRate ?? 1;
-          const upl = direction * pos.units * (currentPrice - (pos.openRate ?? 0)) * convRate;
-          const fees = pos.totalFees ?? 0;
-          const equity = (pos.amount ?? 0) + upl + fees;
-          return { currentPrice, upl, fees, equity, amount: pos.amount ?? 0, convRate };
-        };
-
-        // Compute per-mirror
-        for (const m of mirrors) {
-          const positions = Array.isArray(m.positions) ? m.positions : [];
-          let mirrorCostBasis = 0;
-          let mirrorEquity = 0;
-          let mirrorUPL = 0;
-          let mirrorFees = 0;
-          let mirrorMatched = 0;
-
-          for (const pos of positions) {
-            const result = computePosEquity(pos);
-            if (result) {
-              mirrorEquity += result.equity;
-              mirrorCostBasis += result.amount;
-              mirrorUPL += result.upl;
-              mirrorFees += result.fees;
-              mirrorMatched++;
-              matched++;
-              if (pos.openRate === 0) zeroOpenRate++;
-            } else {
-              unmatched++;
-            }
-          }
-
-          totalPositionEquity += mirrorEquity;
-          totalCostBasis += mirrorCostBasis;
-          totalUnrealizedPL += mirrorUPL;
-          totalFees += mirrorFees;
-
-          const expectedCostBasis = (m.depositSummary ?? 0) - (m.withdrawalSummary ?? 0)
-            + (m.closedPositionsNetProfit ?? 0) - (m.availableAmount ?? 0);
-
-          console.log(`[eToro API] Mirror ${m.parentUsername}:`, {
-            positions: positions.length,
-            matched: mirrorMatched,
-            costBasis: mirrorCostBasis.toFixed(2),
-            expectedCostBasis: expectedCostBasis.toFixed(2),
-            costBasisRatio: expectedCostBasis > 0 ? (mirrorCostBasis / expectedCostBasis).toFixed(2) + "x" : "N/A",
-            unrealizedPL: mirrorUPL.toFixed(2),
-            fees: mirrorFees.toFixed(2),
-            positionEquity: mirrorEquity.toFixed(2),
-            available: (m.availableAmount ?? 0).toFixed(2),
-            mirrorTotalEquity: (mirrorEquity + (m.availableAmount ?? 0)).toFixed(2),
-          });
-        }
-
-        // Also compute direct positions
-        for (const pos of directPositions) {
-          const result = computePosEquity(pos);
-          if (result) {
-            totalPositionEquity += result.equity;
-            totalCostBasis += result.amount;
-            totalUnrealizedPL += result.upl;
-            totalFees += result.fees;
-            matched++;
-            if (pos.openRate === 0) zeroOpenRate++;
-            console.log("[eToro API] Direct position:", {
-              instrumentID: pos.instrumentID,
-              units: pos.units,
-              openRate: pos.openRate,
-              amount: pos.amount,
-              currentPrice: result.currentPrice,
-              upl: result.upl.toFixed(2),
-              equity: result.equity.toFixed(2),
-            });
-          } else {
-            unmatched++;
-          }
-        }
-
-        // Find top 10 positions by absolute UPL to find outliers
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const positionsWithUPL: { pos: any; upl: number; equity: number; currentPrice: number }[] = [];
-        for (const pos of allOpenPositions) {
-          const result = computePosEquity(pos);
-          if (result) {
-            positionsWithUPL.push({ pos, upl: result.upl, equity: result.equity, currentPrice: result.currentPrice });
-          }
-        }
-        positionsWithUPL.sort((a, b) => Math.abs(b.upl) - Math.abs(a.upl));
-        console.log("[eToro API] Top 10 positions by |UPL|:");
-        for (let i = 0; i < Math.min(10, positionsWithUPL.length); i++) {
-          const { pos, upl, equity, currentPrice } = positionsWithUPL[i];
-          console.log(`  #${i + 1}:`, {
-            instrumentID: pos.instrumentID,
-            units: pos.units,
-            openRate: pos.openRate,
-            amount: pos.amount,
-            leverage: pos.leverage,
-            openConversionRate: pos.openConversionRate,
-            currentPrice,
-            upl: upl.toFixed(2),
-            equity: equity.toFixed(2),
-            mirror: pos.mirrorID,
-          });
-        }
-
-        netEquity = totalAvailable + totalPositionEquity;
-
-        console.log("[eToro API] Rates computation:", {
-          totalPositions: allOpenPositions.length,
-          matched,
-          unmatched,
-          zeroOpenRate,
-          totalCostBasis: totalCostBasis.toFixed(2),
-          totalPositionEquity: totalPositionEquity.toFixed(2),
-          totalUnrealizedPL: totalUnrealizedPL.toFixed(2),
-          totalFees: totalFees.toFixed(2),
-          totalAvailable: totalAvailable.toFixed(2),
-          netEquity: netEquity.toFixed(2),
-          expectedFromFlow: (netDeposited + totalClosedPL + totalUnrealizedPL).toFixed(2),
-        });
       }
 
-      if (totalPL === undefined && netEquity !== undefined) {
-        totalPL = netEquity - netDeposited;
+      // Collect all open positions
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const allPositions: any[] = [];
+      for (const m of mirrors) {
+        if (Array.isArray(m.positions)) allPositions.push(...m.positions);
+      }
+      allPositions.push(...directPositions);
+
+      let totalPositionEquity = 0;
+      let matched = 0;
+
+      for (const pos of allPositions) {
+        const rate = ratesMap[pos.instrumentID];
+        if (!rate || pos.units <= 0) continue;
+
+        const currentPrice = pos.isBuy
+          ? (rate.bid ?? rate.Bid ?? 0)
+          : (rate.ask ?? rate.Ask ?? 0);
+        if (currentPrice <= 0) continue;
+
+        const direction = pos.isBuy ? 1 : -1;
+        const convRate = pos.openConversionRate ?? 1;
+        const upl = direction * pos.units * (currentPrice - (pos.openRate ?? 0)) * convRate;
+        const equity = (pos.amount ?? 0) + upl + (pos.totalFees ?? 0);
+
+        totalPositionEquity += equity;
+        matched++;
       }
 
-      if (totalPLPercent === undefined && netDeposited > 0 && totalPL !== undefined) {
+      netEquity = totalAvailable + totalPositionEquity;
+      totalPL = netEquity - netDeposited;
+      if (netDeposited > 0) {
         totalPLPercent = (totalPL / netDeposited) * 100;
       }
 
-      console.log("[eToro API] Final values:", {
-        netEquity,
-        totalPL,
-        totalPLPercent: totalPLPercent?.toFixed(2) + "%",
-        netDeposited,
+      console.log("[eToro API] Portfolio:", {
+        positions: `${matched}/${allPositions.length}`,
+        equity: netEquity.toFixed(2),
+        pl: totalPL.toFixed(2),
+        plPercent: totalPLPercent?.toFixed(1) + "%",
+        mirrors: mirrors.length,
       });
-
-      // Collect all positions for the holdings table
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const allPositions: any[] = [...directPositions];
-      for (const m of mirrors) {
-        if (Array.isArray(m.positions)) {
-          allPositions.push(...m.positions);
-        }
-      }
 
       const portfolio: EtoroPortfolio = {
         raw: portfolioData,
