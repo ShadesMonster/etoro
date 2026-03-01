@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { useFinanceStore } from "./store";
+import type { EtoroPosition } from "./types";
 
 interface LivePrice {
   symbol: string;
@@ -70,6 +72,7 @@ export function useLivePrices(): UseLivePricesResult {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const setApiPositions = useFinanceStore((s) => s.setApiEtoroPositions);
 
   const fetchPortfolio = useCallback(async (skipCache = false) => {
     setLoading(true);
@@ -197,6 +200,29 @@ export function useLivePrices(): UseLivePricesResult {
       setCachedPortfolio(portfolio);
       setEtoroPortfolio(portfolio);
       setLastUpdated(new Date());
+
+      // Store individual positions from the API response
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const apiPositions: any[] = portfolioData._openPositions ?? [];
+      if (apiPositions.length > 0) {
+        const mapped: EtoroPosition[] = apiPositions.map((p) => ({
+          id: p.id,
+          instrument: p.instrument,
+          units: p.units,
+          openRate: p.openRate,
+          currentRate: p.currentRate,
+          profit: p.profit,
+          profitPercent: p.profitPercent,
+          openDate: p.openDate ? p.openDate.slice(0, 10) : "",
+          type: p.type,
+          status: "open" as const,
+          positionId: p.positionId,
+          amount: p.amount,
+          leverage: p.leverage,
+        }));
+        setApiPositions(mapped);
+        console.log(`[eToro API] Stored ${mapped.length} open positions from portfolio`);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to fetch portfolio";
       console.error("[eToro API] Failed:", msg);
@@ -204,7 +230,7 @@ export function useLivePrices(): UseLivePricesResult {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [setApiPositions]);
 
   const fetchPrices = useCallback(
     async (instrumentNames: string[]) => {

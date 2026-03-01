@@ -161,9 +161,85 @@ export async function GET(req: NextRequest) {
 
   try {
     if (action === "portfolio") {
-      // Fetch real portfolio - positions, balance, P/L
-      const data = await etoroFetch("/trading/info/portfolio");
-      return NextResponse.json(data, {
+      // Fetch portfolio + rates + instrument names in parallel for a complete picture
+      const [portfolioData, ratesData, instrumentNames] = await Promise.all([
+        etoroFetch("/trading/info/portfolio"),
+        etoroFetch("/market-data/instruments/rates").catch(() => null),
+        getInstrumentNames().catch(() => ({} as Record<number, string>)),
+      ]);
+
+      // Build rates map
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ratesMap: Record<number, any> = {};
+      if (ratesData) {
+        const ratesArr = ratesData?.rates ?? (Array.isArray(ratesData) ? ratesData : []);
+        for (const r of ratesArr) {
+          const id = r.instrumentID ?? r.InstrumentID;
+          if (id !== undefined) {
+            ratesMap[id] = r;
+            if (!instrumentNames[id]) {
+              const name = r.instrumentDisplayName ?? r.InstrumentDisplayName ??
+                r.symbolFull ?? r.SymbolFull ?? r.name ?? r.Name;
+              if (name) instrumentNames[id] = name;
+            }
+          }
+        }
+      }
+
+      const getName = (id: number) => instrumentNames[id] ?? `#${id}`;
+
+      // Extract open positions from portfolio
+      const cp = portfolioData?.clientPortfolio ?? portfolioData;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const allOpen: any[] = [...(cp?.positions ?? [])];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const m of (cp?.mirrors ?? []) as any[]) {
+        if (Array.isArray(m.positions)) allOpen.push(...m.positions);
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const openPositions = allOpen.map((pos: any) => {
+        const rate = ratesMap[pos.instrumentID];
+        const currentPrice = rate
+          ? (pos.isBuy ? (rate.bid ?? rate.Bid ?? 0) : (rate.ask ?? rate.Ask ?? 0))
+          : 0;
+        const direction = pos.isBuy ? 1 : -1;
+        const convRate = pos.openConversionRate ?? 1;
+        const upl = currentPrice > 0
+          ? direction * pos.units * (currentPrice - (pos.openRate ?? 0)) * convRate
+          : 0;
+        const profit = upl + (pos.totalFees ?? 0);
+        const amount = pos.amount ?? 0;
+        const profitPercent = amount > 0 ? (profit / amount) * 100 : 0;
+
+        return {
+          id: `api:open:${pos.positionID}`,
+          instrument: getName(pos.instrumentID),
+          units: pos.units ?? 0,
+          openRate: pos.openRate ?? 0,
+          currentRate: currentPrice,
+          profit,
+          profitPercent,
+          openDate: pos.openDateTime ?? "",
+          type: pos.isBuy ? "buy" : "sell",
+          status: "open",
+          positionId: String(pos.positionID ?? ""),
+          amount,
+          leverage: pos.leverage ?? 1,
+        };
+      });
+
+      console.log("[eToro Portfolio]", {
+        instruments: Object.keys(instrumentNames).length,
+        positions: openPositions.length,
+        ratesCount: Object.keys(ratesMap).length,
+      });
+
+      return NextResponse.json({
+        ...portfolioData,
+        _openPositions: openPositions,
+        _instrumentCount: Object.keys(instrumentNames).length,
+      }, {
         headers: {
           "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60",
         },

@@ -92,11 +92,12 @@ export function useEtoroSync() {
 
       if (positions.length > 0) {
         setApiPositions(positions);
+        // Only cache the sync timestamp when we actually got positions
+        // Otherwise, allow re-sync on next page load
+        const now = Date.now();
+        try { localStorage.setItem(SYNC_TS_KEY, String(now)); } catch {}
+        setLastSynced(new Date(now));
       }
-
-      const now = Date.now();
-      try { localStorage.setItem(SYNC_TS_KEY, String(now)); } catch {}
-      setLastSynced(new Date(now));
 
       console.log(`[eToro Sync] Stored ${positions.length} positions (${data.openPositions?.length ?? 0} open, ${data.closedPositions?.length ?? 0} closed, ${data.instrumentCount ?? 0} instruments, ${data.unresolved ?? 0} unresolved)`);
     } catch (e) {
