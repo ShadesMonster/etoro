@@ -251,7 +251,36 @@ export default function AnalyticsPage() {
       months[m].retire = convertCurrency(f.totalValue, "GBP", cur, rates);
     }
 
-    // Investment value: accumulate closed P/L + dividends over time
+    // Investment value: match the main dashboard calculation exactly
+    // deposits - withdrawals + closed P/L + dividends + unrealized P/L
+    const openPositions = etoroPositions.filter((p) => (p.status || "closed") === "open");
+    const closedPL = etoroPositions
+      .filter((p) => (p.status || "closed") === "closed")
+      .reduce((sum, p) => sum + p.profit, 0);
+    const etoroDeposits = etoroTransactions
+      .filter((tx) => tx.type.toLowerCase().includes("deposit"))
+      .reduce((s, tx) => s + Math.abs(tx.amount), 0);
+    const etoroWithdrawals = etoroTransactions
+      .filter((tx) => tx.type.toLowerCase().includes("withdraw"))
+      .reduce((s, tx) => s + Math.abs(tx.amount), 0);
+    const netDeposited = etoroDeposits - etoroWithdrawals;
+    const etoroDivTotal = etoroDividends.length > 0
+      ? etoroDividends.reduce((s, d) => s + d.netDividendUSD, 0)
+      : etoroTransactions
+          .filter((tx) => tx.type.toLowerCase().includes("dividend") || tx.detail.toLowerCase().includes("dividend"))
+          .reduce((s, tx) => s + tx.amount, 0);
+    const unrealizedPL = openPositions.reduce((sum, p) => sum + p.profit, 0);
+
+    let currentInvestmentValueUSD: number;
+    if (netDeposited > 0) {
+      currentInvestmentValueUSD = netDeposited + closedPL + etoroDivTotal + unrealizedPL;
+    } else if (etoroPositions.length > 0) {
+      currentInvestmentValueUSD = etoroPositions.reduce((sum, p) => sum + p.units * p.currentRate, 0);
+    } else {
+      currentInvestmentValueUSD = 0;
+    }
+
+    // For the historical chart, accumulate closed P/L month by month
     const closedByMonth: Record<string, number> = {};
     for (const p of etoroPositions.filter((p) => (p.status || "closed") === "closed")) {
       if (p.closeDate) {
@@ -260,31 +289,41 @@ export default function AnalyticsPage() {
       }
     }
 
-    const etoroDeposits = etoroTransactions
-      .filter((tx) => tx.type.toLowerCase().includes("deposit"))
-      .reduce((s, tx) => s + Math.abs(tx.amount), 0);
-    const etoroWithdrawals = etoroTransactions
-      .filter((tx) => tx.type.toLowerCase().includes("withdraw"))
-      .reduce((s, tx) => s + Math.abs(tx.amount), 0);
-    const netDeposited = etoroDeposits - etoroWithdrawals;
+    // Dividend income by month
+    const divByMonth: Record<string, number> = {};
+    for (const d of etoroDividends) {
+      const m = d.date.slice(0, 7);
+      divByMonth[m] = (divByMonth[m] || 0) + d.netDividendUSD;
+    }
 
     let cumulativePL = 0;
+    let cumulativeDivs = 0;
     const allMonths = new Set([
       ...Object.keys(months),
       ...Object.keys(closedByMonth),
+      ...Object.keys(divByMonth),
     ]);
     const sorted = Array.from(allMonths).sort();
 
     let lastBank = 0;
     let lastRetire = 0;
 
-    return sorted.map((m) => {
+    const result = sorted.map((m, idx) => {
       if (months[m]?.bank) lastBank = months[m].bank;
       if (months[m]?.retire) lastRetire = months[m].retire;
-      cumulativePL += closedByMonth[m] ? convertCurrency(closedByMonth[m], "USD", cur, rates) : 0;
-      const investVal = netDeposited > 0
-        ? convertCurrency(netDeposited + cumulativePL, "USD", cur, rates)
-        : 0;
+      cumulativePL += closedByMonth[m] || 0;
+      cumulativeDivs += divByMonth[m] || 0;
+
+      let investVal: number;
+      // For the latest month, use the full accurate calculation (includes unrealized)
+      if (idx === sorted.length - 1 && currentInvestmentValueUSD > 0) {
+        investVal = convertCurrency(currentInvestmentValueUSD, "USD", cur, rates);
+      } else if (netDeposited > 0) {
+        // Historical months: deposits + cumulative closed P/L + cumulative dividends
+        investVal = convertCurrency(netDeposited + cumulativePL + cumulativeDivs, "USD", cur, rates);
+      } else {
+        investVal = 0;
+      }
 
       return {
         month: m,
@@ -293,7 +332,9 @@ export default function AnalyticsPage() {
         Retirement: Math.round(lastRetire),
       };
     });
-  }, [transactions, etoroPositions, etoroTransactions, retirementFunds, cur, rates]);
+
+    return result;
+  }, [transactions, etoroPositions, etoroTransactions, etoroDividends, retirementFunds, cur, rates]);
 
   // ─── Income sources breakdown ──────────────────────────────────────────────
 
@@ -710,10 +751,46 @@ export default function AnalyticsPage() {
   // ─── Summary stats ─────────────────────────────────────────────────────────
 
   const summaryStats = useMemo(() => {
-    const latestWealth = wealthComposition[wealthComposition.length - 1];
-    const totalNetWorth = latestWealth
-      ? latestWealth.Bank + latestWealth.Investments + latestWealth.Retirement
-      : 0;
+    // Bank balance: latest transaction with a balance field
+    const latestTx = [...transactions]
+      .filter((t) => t.balance !== undefined)
+      .sort((a, b) => b.date.localeCompare(a.date))[0];
+    const bankBalance = convertCurrency(latestTx?.balance ?? 0, "GBP", cur, rates);
+
+    // Investment value: match main dashboard calculation exactly
+    const openPositions = etoroPositions.filter((p) => (p.status || "closed") === "open");
+    const closedPL = etoroPositions
+      .filter((p) => (p.status || "closed") === "closed")
+      .reduce((sum, p) => sum + p.profit, 0);
+    const etoroDeposits = etoroTransactions
+      .filter((tx) => tx.type.toLowerCase().includes("deposit"))
+      .reduce((s, tx) => s + Math.abs(tx.amount), 0);
+    const etoroWithdrawals = etoroTransactions
+      .filter((tx) => tx.type.toLowerCase().includes("withdraw"))
+      .reduce((s, tx) => s + Math.abs(tx.amount), 0);
+    const etoroNetInvested = etoroDeposits - etoroWithdrawals;
+    const etoroDivTotal = etoroDividends.length > 0
+      ? etoroDividends.reduce((s, d) => s + d.netDividendUSD, 0)
+      : etoroTransactions
+          .filter((tx) => tx.type.toLowerCase().includes("dividend") || tx.detail.toLowerCase().includes("dividend"))
+          .reduce((s, tx) => s + tx.amount, 0);
+    const unrealizedPL = openPositions.reduce((sum, p) => sum + p.profit, 0);
+
+    let investmentValueUSD: number;
+    if (etoroNetInvested > 0) {
+      investmentValueUSD = etoroNetInvested + closedPL + etoroDivTotal + unrealizedPL;
+    } else if (etoroPositions.length > 0) {
+      investmentValueUSD = etoroPositions.reduce((sum, p) => sum + p.units * p.currentRate, 0);
+    } else {
+      investmentValueUSD = 0;
+    }
+    const investmentValue = convertCurrency(investmentValueUSD, "USD", cur, rates);
+
+    // Retirement
+    const latestRetirement = retirementFunds[0];
+    const retirementValue = convertCurrency(latestRetirement?.totalValue ?? 0, "GBP", cur, rates);
+
+    const totalNetWorth = bankBalance + investmentValue + retirementValue;
 
     const totalIncome = monthlyFinancials.reduce((s, m) => s + m.income, 0);
     const totalSpending = monthlyFinancials.reduce((s, m) => s + m.spending, 0);
@@ -726,10 +803,8 @@ export default function AnalyticsPage() {
       (s, d) => s + convertCurrency(d.netDividendUSD, "USD", cur, rates),
       0
     );
-    const investmentPL = etoroPositions.reduce(
-      (s, p) => s + convertCurrency(p.profit, "USD", cur, rates),
-      0
-    );
+    const investmentProfitUSD = closedPL + etoroDivTotal + unrealizedPL;
+    const investmentPL = convertCurrency(investmentProfitUSD, "USD", cur, rates);
 
     const savingsRateData = calculateSavingsRate(transactions, 6);
     const avgSavingsRate =
