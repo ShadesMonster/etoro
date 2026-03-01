@@ -22,6 +22,7 @@ import {
   formatDate,
   convertCurrency,
   getEffectiveCategory,
+  isSpending,
   detectRecurringTransactions,
   getUpcomingBills,
   calculateSavingsRate,
@@ -119,7 +120,7 @@ export default function Dashboard() {
     const now = new Date();
     const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     const monthlySpending = transactions
-      .filter((t) => t.date.startsWith(thisMonth) && t.amount < 0)
+      .filter((t) => t.date.startsWith(thisMonth) && isSpending(t, categoryOverrides || {}))
       .reduce((sum, t) => sum + Math.abs(t.amount), 0);
     const monthlyIncome = transactions
       .filter((t) => t.date.startsWith(thisMonth) && t.amount > 0)
@@ -127,7 +128,7 @@ export default function Dashboard() {
 
     const categoryTotals: Record<string, number> = {};
     transactions
-      .filter((t) => t.amount < 0)
+      .filter((t) => isSpending(t, categoryOverrides || {}))
       .forEach((t) => {
         const cat = getEffectiveCategory(t, categoryOverrides || {});
         categoryTotals[cat] = (categoryTotals[cat] || 0) + Math.abs(t.amount);

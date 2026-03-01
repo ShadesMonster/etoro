@@ -21,6 +21,13 @@ export function formatPercent(value: number): string {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
+/** True spending = negative amount AND not a transfer (transfers are money moving between your own accounts) */
+export function isSpending(tx: Transaction, overrides?: Record<string, SpendingCategory>): boolean {
+  if (tx.amount >= 0) return false;
+  const cat = overrides ? getEffectiveCategory(tx, overrides) : tx.category;
+  return cat !== "transfers" && cat !== "income";
+}
+
 export function groupByMonth(
   items: Array<{ date: string; amount?: number; totalValue?: number }>
 ): Record<string, typeof items> {
@@ -53,7 +60,7 @@ export function convertCurrency(
 }
 
 export function detectRecurringTransactions(transactions: Transaction[]): RecurringTransaction[] {
-  const spending = transactions.filter((t) => t.amount < 0);
+  const spending = transactions.filter((t) => isSpending(t));
   const groups: Record<string, Transaction[]> = {};
   for (const tx of spending) {
     const key = tx.description.toLowerCase().trim()
@@ -99,7 +106,7 @@ export function calculateSpendingForecast(transactions: Transaction[]): Spending
   const daysRemaining = daysInMonth - dayOfMonth;
   const thisMonth = `${year}-${String(month + 1).padStart(2, "0")}`;
   const spentSoFar = transactions
-    .filter((t) => t.date.startsWith(thisMonth) && t.amount < 0)
+    .filter((t) => t.date.startsWith(thisMonth) && isSpending(t))
     .reduce((s, t) => s + Math.abs(t.amount), 0);
   let totalSpending = 0;
   let totalDays = 0;
@@ -108,7 +115,7 @@ export function calculateSpendingForecast(transactions: Transaction[]): Spending
     const mKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     const mDays = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
     const mSpend = transactions
-      .filter((t) => t.date.startsWith(mKey) && t.amount < 0)
+      .filter((t) => t.date.startsWith(mKey) && isSpending(t))
       .reduce((s, t) => s + Math.abs(t.amount), 0);
     if (mSpend > 0) { totalSpending += mSpend; totalDays += mDays; }
   }
@@ -215,7 +222,7 @@ export function getMerchantInsights(
   transactions: Transaction[],
   overrides: Record<string, SpendingCategory>
 ): MerchantInsight[] {
-  const spending = transactions.filter((t) => t.amount < 0);
+  const spending = transactions.filter((t) => isSpending(t, overrides));
   const groups: Record<string, { txs: Transaction[]; cat: SpendingCategory }> = {};
 
   for (const tx of spending) {
@@ -265,7 +272,7 @@ export function detectAnomalies(
   transactions: Transaction[],
   overrides: Record<string, SpendingCategory>
 ): AnomalyTransaction[] {
-  const spending = transactions.filter((t) => t.amount < 0);
+  const spending = transactions.filter((t) => isSpending(t, overrides));
 
   // Calculate average + stddev per category
   const catAmounts: Record<string, number[]> = {};
@@ -332,7 +339,7 @@ export function calculateSavingsRate(
     const mKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     const monthTxs = transactions.filter((t) => t.date.startsWith(mKey));
     const income = monthTxs.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-    const spending = monthTxs.filter((t) => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
+    const spending = monthTxs.filter((t) => isSpending(t)).reduce((s, t) => s + Math.abs(t.amount), 0);
     const saved = income - spending;
     const rate = income > 0 ? (saved / income) * 100 : 0;
 
@@ -355,7 +362,7 @@ export function getSpendingHeatmap(
 ): Array<{ date: string; amount: number; count: number }> {
   const daily: Record<string, { amount: number; count: number }> = {};
   for (const tx of transactions) {
-    if (tx.amount >= 0) continue;
+    if (!isSpending(tx)) continue;
     const day = tx.date.slice(0, 10);
     if (!daily[day]) daily[day] = { amount: 0, count: 0 };
     daily[day].amount += Math.abs(tx.amount);
@@ -386,7 +393,7 @@ export function generateAlerts(
   // Budget exceeded alerts
   for (const b of budgets) {
     const spent = transactions
-      .filter((t) => t.date.startsWith(thisMonth) && t.amount < 0 && getEffectiveCategory(t, overrides) === b.category)
+      .filter((t) => t.date.startsWith(thisMonth) && isSpending(t, overrides) && getEffectiveCategory(t, overrides) === b.category)
       .reduce((s, t) => s + Math.abs(t.amount), 0);
     const percent = b.monthlyLimit > 0 ? (spent / b.monthlyLimit) * 100 : 0;
     if (percent > 100) {

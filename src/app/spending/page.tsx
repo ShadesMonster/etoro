@@ -20,6 +20,7 @@ import {
   formatDate,
   formatPercent,
   getEffectiveCategory,
+  isSpending,
   detectRecurringTransactions,
   calculateSpendingForecast,
   calculateSpendingTrends,
@@ -91,7 +92,7 @@ export default function SpendingPage() {
   }, [dateFiltered, searchQuery]);
 
   const spending = useMemo(
-    () => searchFiltered.filter((t) => t.amount < 0),
+    () => searchFiltered.filter((t) => t.amount < 0 && t.effectiveCategory !== "transfers"),
     [searchFiltered]
   );
 
@@ -122,8 +123,8 @@ export default function SpendingPage() {
     searchFiltered.forEach((t) => {
       const month = t.date.slice(0, 7);
       if (!monthlyTotals[month]) monthlyTotals[month] = { spent: 0, earned: 0 };
-      if (t.amount < 0) monthlyTotals[month].spent += Math.abs(t.amount);
-      else monthlyTotals[month].earned += t.amount;
+      if (t.amount < 0 && t.effectiveCategory !== "transfers") monthlyTotals[month].spent += Math.abs(t.amount);
+      else if (t.amount > 0) monthlyTotals[month].earned += t.amount;
     });
     const monthlyData = Object.entries(monthlyTotals)
       .sort(([a], [b]) => a.localeCompare(b))
