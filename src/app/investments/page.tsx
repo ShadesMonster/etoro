@@ -326,6 +326,9 @@ export default function InvestmentsPage() {
     let plPercent: number;
     const apiTotalPL = hasApiData ? etoroPortfolio?.totalPL : undefined;
 
+    // Check if year filter includes all positions (e.g. all 3 years selected = same as "All")
+    const allIncluded = !isYearFiltered || filteredPositions.length === etoroPositions.length;
+
     if (isYearFiltered) {
       // Sum of ALL position profits (for proportional allocation denominator)
       const allPositionPL = etoroPositions.reduce((sum, p) => sum + p.profit, 0);
@@ -336,7 +339,12 @@ export default function InvestmentsPage() {
       } else {
         totalPL = filteredPL;
       }
-      plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
+      // Use time-weighted return when all positions are included (all years selected)
+      if (allIncluded && etoroPortfolio?.timeWeightedReturn) {
+        plPercent = etoroPortfolio.timeWeightedReturn;
+      } else {
+        plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
+      }
     } else if (apiTotalPL !== undefined && !hasTransactions) {
       totalPL = apiTotalPL;
       // Use time-weighted return (closer to eToro's return) if available, otherwise simple return
