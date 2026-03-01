@@ -106,44 +106,18 @@ export function useLivePrices(): UseLivePricesResult {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mirrors: any[] = cp?.mirrors ?? [];
 
-      // Aggregate deposit data from all mirrors + direct positions.
-      // Each mirror has two deposit fields:
-      //   initialInvestment = the first allocation to the copy-trader
-      //   depositSummary = subsequent additional deposits into the mirror
-      // These are separate values (confirmed from live data), so we sum both.
-      // withdrawalSummary = money moved back from mirror to account cash.
-      let mirrorInitialInvestments = 0;
-      let mirrorSubsequentDeposits = 0;
-      let mirrorWithdrawals = 0;
-      let totalAvailable = topCredit;
-
+      // Sum mirror-level available cash (uninvested cash within copy-traders).
+      // eToro counts this as part of "Total Invested" (allocated to the copy-trader).
+      let mirrorAvailableCash = 0;
       for (const m of mirrors) {
-        mirrorInitialInvestments += m.initialInvestment ?? 0;
-        mirrorSubsequentDeposits += m.depositSummary ?? 0;
-        mirrorWithdrawals += m.withdrawalSummary ?? 0;
-        totalAvailable += m.availableAmount ?? 0;
+        mirrorAvailableCash += m.availableAmount ?? 0;
       }
-
-      // Direct position amounts (capital invested outside copy-trading mirrors)
-      let directPositionAmounts = 0;
-      for (const pos of directPositions) {
-        directPositionAmounts += pos.amount ?? 0;
-      }
-
-      // Net deposited = gross mirror allocations - mirror withdrawals + direct investments + cash
-      const grossMirrorDeposits = mirrorInitialInvestments + mirrorSubsequentDeposits;
-      const totalDeposited = grossMirrorDeposits + directPositionAmounts + topCredit;
-      const netDeposited = totalDeposited - mirrorWithdrawals;
 
       // === COMPUTE PORTFOLIO VALUE FROM POSITIONS + LIVE RATES ===
-      // Each position has: units, openRate, amount, openConversionRate, isBuy
-      // positionEquity = amount + direction * units * (currentPrice - openRate) * openConversionRate
-      // openConversionRate converts from instrument currency to USD
-      // (e.g. 1.0 for USD instruments, ~0.0137 for GBP pence instruments)
-      let netEquity = 0;
-      let totalPL = 0;
-      let totalPLPercent: number | undefined;
-
+      // eToro's breakdown: Cash + Total Invested + P/L = Total Value
+      //   Cash = topCredit (account-level uninvested cash)
+      //   Total Invested = sum(pos.amount) + mirrorAvailableCash
+      //   P/L = sum(pos.equity - pos.amount) = sum(upl + totalFees)
       const ratesRes = await fetch("/api/prices?action=rates").catch(() => null);
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -157,7 +131,7 @@ export function useLivePrices(): UseLivePricesResult {
         }
       }
 
-      // Collect all open positions
+      // Collect all open positions (from mirrors + direct)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const allPositions: any[] = [];
       for (const m of mirrors) {
@@ -166,48 +140,64 @@ export function useLivePrices(): UseLivePricesResult {
       allPositions.push(...directPositions);
 
       let totalPositionEquity = 0;
+      let totalPositionAmounts = 0;
       let matched = 0;
 
       for (const pos of allPositions) {
+        const amount = pos.amount ?? 0;
+        totalPositionAmounts += amount;
+
         const rate = ratesMap[pos.instrumentID];
-        if (!rate || pos.units <= 0) continue;
+        if (!rate || pos.units <= 0) {
+          // No rate: assume equity = amount (P/L = 0)
+          totalPositionEquity += amount;
+          continue;
+        }
 
         const currentPrice = pos.isBuy
           ? (rate.bid ?? rate.Bid ?? 0)
           : (rate.ask ?? rate.Ask ?? 0);
-        if (currentPrice <= 0) continue;
+        if (currentPrice <= 0) {
+          totalPositionEquity += amount;
+          continue;
+        }
 
         const direction = pos.isBuy ? 1 : -1;
         const convRate = pos.openConversionRate ?? 1;
         const upl = direction * pos.units * (currentPrice - (pos.openRate ?? 0)) * convRate;
-        const equity = (pos.amount ?? 0) + upl + (pos.totalFees ?? 0);
+        const equity = amount + upl + (pos.totalFees ?? 0);
 
         totalPositionEquity += equity;
         matched++;
       }
 
-      netEquity = totalAvailable + totalPositionEquity;
-      totalPL = netEquity - netDeposited;
-      if (netDeposited > 0) {
-        totalPLPercent = (totalPL / netDeposited) * 100;
-      }
+      // Match eToro's exact breakdown:
+      // Cash = topCredit (account-level cash only)
+      // Total Invested = position amounts + mirror available cash
+      // P/L = position equity - position amounts (= sum of UPL + fees)
+      // Total Value = cash + invested + P/L
+      const totalInvested = totalPositionAmounts + mirrorAvailableCash;
+      const totalPL = totalPositionEquity - totalPositionAmounts;
+      const netEquity = topCredit + totalInvested + totalPL;
+      const totalPLPercent = totalInvested > 0 ? (totalPL / totalInvested) * 100 : undefined;
 
       console.log("[eToro API] Portfolio:", {
         positions: `${matched}/${allPositions.length}`,
-        equity: netEquity.toFixed(2),
+        cash: topCredit.toFixed(2),
+        invested: totalInvested.toFixed(2),
         pl: totalPL.toFixed(2),
         plPercent: totalPLPercent?.toFixed(1) + "%",
-        mirrors: mirrors.length,
+        total: netEquity.toFixed(2),
       });
 
       const portfolio: EtoroPortfolio = {
         raw: portfolioData,
-        credit: totalAvailable,
+        credit: topCredit,
         netEquity,
         totalPL,
         totalPLPercent,
-        totalInvested: netDeposited,
-        depositSummary: totalDeposited,
+        totalInvested,
+        depositSummary: totalInvested,
         positions: allPositions,
         mirrors,
         connected: true,
