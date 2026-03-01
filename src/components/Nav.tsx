@@ -13,6 +13,7 @@ const links = [
   { href: "/planning", label: "Planning" },
   { href: "/tax", label: "Tax" },
   { href: "/upload", label: "Upload" },
+  { href: "/banksync", label: "Bank Sync" },
   { href: "/settings", label: "Settings" },
 ];
 

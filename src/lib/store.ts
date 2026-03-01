@@ -5,7 +5,7 @@ import { persist, createJSONStorage, type StateStorage } from "zustand/middlewar
 import {
   Transaction, EtoroPosition, EtoroTransaction, EtoroDividend, RetirementFund,
   Budget, CategoryRule, SavingsGoal, UserSettings, SpendingCategory,
-  Debt, DashboardWidget, DEFAULT_WIDGETS,
+  Debt, DashboardWidget, DEFAULT_WIDGETS, BankSyncSession,
 } from "./types";
 
 // ─── IndexedDB Storage Adapter ──────────────────────────────────────────────
@@ -144,6 +144,10 @@ interface FinanceStore {
   tickerMappings: Record<string, string>;
   setTickerMapping: (instrument: string, ticker: string) => void;
   setTickerMappings: (mappings: Record<string, string>) => void;
+  bankSyncSessions: BankSyncSession[];
+  addBankSyncSession: (session: BankSyncSession) => void;
+  updateBankSyncSession: (sessionId: string, updates: Partial<BankSyncSession>) => void;
+  removeBankSyncSession: (sessionId: string) => void;
   settings: UserSettings;
   updateSettings: (settings: Partial<UserSettings>) => void;
   removeTransactions: (ids: string[]) => void;
@@ -232,6 +236,24 @@ export const useFinanceStore = create<FinanceStore>()(
         set((s) => ({ tickerMappings: { ...s.tickerMappings, [instrument]: ticker } })),
       setTickerMappings: (mappings) =>
         set((s) => ({ tickerMappings: { ...s.tickerMappings, ...mappings } })),
+      bankSyncSessions: [],
+      addBankSyncSession: (session) =>
+        set((s) => ({
+          bankSyncSessions: [
+            ...s.bankSyncSessions.filter((bs) => bs.sessionId !== session.sessionId),
+            session,
+          ],
+        })),
+      updateBankSyncSession: (sessionId, updates) =>
+        set((s) => ({
+          bankSyncSessions: s.bankSyncSessions.map((bs) =>
+            bs.sessionId === sessionId ? { ...bs, ...updates } : bs
+          ),
+        })),
+      removeBankSyncSession: (sessionId) =>
+        set((s) => ({
+          bankSyncSessions: s.bankSyncSessions.filter((bs) => bs.sessionId !== sessionId),
+        })),
       settings: DEFAULT_SETTINGS,
       updateSettings: (partial) =>
         set((s) => ({ settings: { ...s.settings, ...partial } })),
@@ -251,7 +273,7 @@ export const useFinanceStore = create<FinanceStore>()(
           etoroDividends: [], retirementFunds: [], categoryOverrides: {},
           categoryRules: [], budgets: [], savingsGoals: [], debts: [],
           dashboardWidgets: DEFAULT_WIDGETS, dismissedAlerts: [],
-          tickerMappings: {}, settings: DEFAULT_SETTINGS,
+          tickerMappings: {}, bankSyncSessions: [], settings: DEFAULT_SETTINGS,
         }),
       exportData: () => {
         const s = get();
@@ -262,7 +284,7 @@ export const useFinanceStore = create<FinanceStore>()(
           categoryOverrides: s.categoryOverrides, categoryRules: s.categoryRules,
           budgets: s.budgets, savingsGoals: s.savingsGoals, debts: s.debts,
           dashboardWidgets: s.dashboardWidgets, tickerMappings: s.tickerMappings,
-          settings: s.settings,
+          bankSyncSessions: s.bankSyncSessions, settings: s.settings,
         });
       },
       importData: (json) => {
@@ -276,7 +298,7 @@ export const useFinanceStore = create<FinanceStore>()(
             categoryOverrides: d.categoryOverrides || {}, categoryRules: d.categoryRules || [],
             budgets: d.budgets || [], savingsGoals: d.savingsGoals || [],
             debts: d.debts || [], dashboardWidgets: d.dashboardWidgets || DEFAULT_WIDGETS,
-            tickerMappings: d.tickerMappings || {},
+            tickerMappings: d.tickerMappings || {}, bankSyncSessions: d.bankSyncSessions || [],
             settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}) },
           });
           return true;

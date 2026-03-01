@@ -258,3 +258,19 @@ export interface FinancialAlert {
   message: string;
   date: string;
 }
+
+export interface BankSyncAccount {
+  uid: string;
+  iban?: string;
+  name?: string;
+}
+
+export interface BankSyncSession {
+  sessionId: string;
+  bankName: string;
+  bankCountry: string;
+  accounts: BankSyncAccount[];
+  connectedAt: string;
+  lastSyncAt?: string;
+  validUntil?: string;
+}
