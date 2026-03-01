@@ -318,16 +318,28 @@ export default function InvestmentsPage() {
     const apiEquity = etoroPortfolio?.netEquity;
     const estimatedValue = apiEquity ?? (netInvested + realizedPL + filteredDividends + unrealizedPL);
 
-    // P/L: when year-filtered, use P/L from filtered positions only
-    // When all-time, prefer API P/L if available
+    // P/L: when year-filtered, proportionally scale the API's accurate total P/L
+    // based on position-level P/L distribution (position profits alone miss dividends,
+    // overnight fees, and other account-level P/L that the API total captures).
+    // When all-time, prefer API P/L if available.
     let totalPL: number;
     let plPercent: number;
+    const apiTotalPL = hasApiData ? etoroPortfolio?.totalPL : undefined;
+
     if (isYearFiltered) {
-      totalPL = filteredPL;
+      // Sum of ALL position profits (for proportional allocation denominator)
+      const allPositionPL = etoroPositions.reduce((sum, p) => sum + p.profit, 0);
+
+      if (apiTotalPL !== undefined && Math.abs(allPositionPL) > 0.01) {
+        // Proportionally allocate the accurate API total P/L to this year's positions
+        totalPL = apiTotalPL * (filteredPL / allPositionPL);
+      } else {
+        totalPL = filteredPL;
+      }
       plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
-    } else if (hasApiData && !hasTransactions && etoroPortfolio?.totalPL !== undefined) {
-      totalPL = etoroPortfolio.totalPL;
-      plPercent = etoroPortfolio.totalPLPercent ?? (netInvested > 0 ? (totalPL / netInvested) * 100 : 0);
+    } else if (apiTotalPL !== undefined && !hasTransactions) {
+      totalPL = apiTotalPL;
+      plPercent = etoroPortfolio?.totalPLPercent ?? (netInvested > 0 ? (totalPL / netInvested) * 100 : 0);
     } else {
       totalPL = estimatedValue - netInvested;
       plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
