@@ -100,6 +100,26 @@ export function useLivePrices(): UseLivePricesResult {
       const portfolioData = await portfolioRes.json();
       const cp = portfolioData?.clientPortfolio ?? portfolioData;
 
+      // Log raw API structure to browser console for debugging
+      console.log("[eToro Raw] clientPortfolio keys:", Object.keys(cp ?? {}));
+      console.log("[eToro Raw] clientPortfolio top-level:", {
+        credit: cp?.credit,
+        equity: cp?.equity,
+        totalDeposited: cp?.totalDeposited,
+        netDeposit: cp?.netDeposit,
+        depositAmount: cp?.depositAmount,
+        depositSummary: cp?.depositSummary,
+        balance: cp?.balance,
+        netAmount: cp?.netAmount,
+        totalRealizedEquity: cp?.totalRealizedEquity,
+        realizedEquity: cp?.realizedEquity,
+      });
+      if (cp?.mirrors?.length > 0) {
+        console.log("[eToro Raw] mirror[0] keys:", Object.keys(cp.mirrors[0]));
+        console.log("[eToro Raw] mirror[0] sample:", JSON.stringify(cp.mirrors[0], null, 2).slice(0, 800));
+      }
+      console.log("[eToro Raw] direct positions:", cp?.positions?.length ?? 0);
+
       const topCredit = cp?.credit ?? 0;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const directPositions: any[] = cp?.positions ?? [];
