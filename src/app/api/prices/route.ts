@@ -235,30 +235,7 @@ export async function GET(req: NextRequest) {
         ratesCount: Object.keys(ratesMap).length,
       });
 
-      // Log raw portfolio structure for debugging deposit fields
-      const cpDebug = portfolioData?.clientPortfolio ?? portfolioData;
-      const mirrorsDebug = cpDebug?.mirrors ?? [];
-      console.log("[eToro Portfolio Debug]", {
-        topLevelKeys: Object.keys(portfolioData ?? {}),
-        cpKeys: Object.keys(cpDebug ?? {}),
-        cpCredit: cpDebug?.credit,
-        cpEquity: cpDebug?.equity,
-        cpNetDeposit: cpDebug?.netDeposit,
-        cpTotalDeposit: cpDebug?.totalDeposit,
-        cpTotalDeposited: cpDebug?.totalDeposited,
-        cpDepositAmount: cpDebug?.depositAmount,
-        cpAvailableAmount: cpDebug?.availableAmount,
-        directPositionCount: cpDebug?.positions?.length ?? 0,
-        mirrorCount: mirrorsDebug.length,
-        mirrorKeys: mirrorsDebug.length > 0 ? Object.keys(mirrorsDebug[0]) : [],
-        mirrorSample: mirrorsDebug.length > 0 ? {
-          depositSummary: mirrorsDebug[0]?.depositSummary,
-          withdrawalSummary: mirrorsDebug[0]?.withdrawalSummary,
-          availableAmount: mirrorsDebug[0]?.availableAmount,
-          credit: mirrorsDebug[0]?.credit,
-          equity: mirrorsDebug[0]?.equity,
-        } : null,
-      });
+
 
       return NextResponse.json({
         ...portfolioData,

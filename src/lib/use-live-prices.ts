@@ -100,44 +100,27 @@ export function useLivePrices(): UseLivePricesResult {
       const portfolioData = await portfolioRes.json();
       const cp = portfolioData?.clientPortfolio ?? portfolioData;
 
-      // Log raw API structure to browser console for debugging
-      console.log("[eToro Raw] clientPortfolio keys:", Object.keys(cp ?? {}));
-      console.log("[eToro Raw] clientPortfolio top-level:", {
-        credit: cp?.credit,
-        equity: cp?.equity,
-        totalDeposited: cp?.totalDeposited,
-        netDeposit: cp?.netDeposit,
-        depositAmount: cp?.depositAmount,
-        depositSummary: cp?.depositSummary,
-        balance: cp?.balance,
-        netAmount: cp?.netAmount,
-        totalRealizedEquity: cp?.totalRealizedEquity,
-        realizedEquity: cp?.realizedEquity,
-      });
-      if (cp?.mirrors?.length > 0) {
-        console.log("[eToro Raw] mirror[0] keys:", Object.keys(cp.mirrors[0]));
-        console.log("[eToro Raw] mirror[0] sample:", JSON.stringify(cp.mirrors[0], null, 2).slice(0, 800));
-      }
-      console.log("[eToro Raw] direct positions:", cp?.positions?.length ?? 0);
-
       const topCredit = cp?.credit ?? 0;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const directPositions: any[] = cp?.positions ?? [];
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mirrors: any[] = cp?.mirrors ?? [];
 
-      // Aggregate deposit data from all mirrors + direct positions
-      let mirrorDeposits = 0;
+      // Aggregate deposit data from all mirrors + direct positions.
+      // Each mirror has two deposit fields:
+      //   initialInvestment = the first allocation to the copy-trader
+      //   depositSummary = subsequent additional deposits into the mirror
+      // These are separate values (confirmed from live data), so we sum both.
+      // withdrawalSummary = money moved back from mirror to account cash.
       let mirrorInitialInvestments = 0;
+      let mirrorSubsequentDeposits = 0;
       let mirrorWithdrawals = 0;
-      let mirrorClosedPL = 0;
       let totalAvailable = topCredit;
 
       for (const m of mirrors) {
-        mirrorDeposits += m.depositSummary ?? 0;
         mirrorInitialInvestments += m.initialInvestment ?? 0;
+        mirrorSubsequentDeposits += m.depositSummary ?? 0;
         mirrorWithdrawals += m.withdrawalSummary ?? 0;
-        mirrorClosedPL += m.closedPositionsNetProfit ?? 0;
         totalAvailable += m.availableAmount ?? 0;
       }
 
@@ -147,48 +130,10 @@ export function useLivePrices(): UseLivePricesResult {
         directPositionAmounts += pos.amount ?? 0;
       }
 
-      // Log all deposit sources for debugging
-      console.log("[eToro Deposits]", {
-        mirrorCount: mirrors.length,
-        mirrorDeposits: mirrorDeposits.toFixed(2),
-        mirrorInitialInvestments: mirrorInitialInvestments.toFixed(2),
-        mirrorWithdrawals: mirrorWithdrawals.toFixed(2),
-        mirrorClosedPL: mirrorClosedPL.toFixed(2),
-        directPositionAmounts: directPositionAmounts.toFixed(2),
-        topCredit: topCredit.toFixed(2),
-        totalAvailable: totalAvailable.toFixed(2),
-        // Show per-mirror breakdown
-        perMirror: mirrors.map((m: Record<string, unknown>) => ({
-          parent: m.parentUsername,
-          initial: m.initialInvestment,
-          deposits: m.depositSummary,
-          withdrawals: m.withdrawalSummary,
-          closedPL: m.closedPositionsNetProfit,
-          available: m.availableAmount,
-        })),
-      });
-
-      // Compute total deposited from best available data.
-      // initialInvestment = initial allocation to each copy-trader (from actual deposits)
-      // depositSummary = subsequent additional deposits into the mirror
-      // These may overlap (depositSummary might include initialInvestment) or be separate.
-      // Try both and pick the one that makes more sense:
-      const sumInitialPlusDeposits = mirrorInitialInvestments + mirrorDeposits;
-      const bestMirrorDeposits = Math.max(mirrorDeposits, mirrorInitialInvestments, sumInitialPlusDeposits);
-
-      // Total deposited = mirror allocations + direct positions + uninvested cash
-      const totalDeposited = bestMirrorDeposits + directPositionAmounts + topCredit;
-      const totalWithdrawn = mirrorWithdrawals;
-      const netDeposited = totalDeposited - totalWithdrawn;
-
-      console.log("[eToro Net Invested]", {
-        "depositSummary total": mirrorDeposits.toFixed(2),
-        "initialInvestment total": mirrorInitialInvestments.toFixed(2),
-        "initial + deposits": sumInitialPlusDeposits.toFixed(2),
-        "bestMirrorDeposits (max)": bestMirrorDeposits.toFixed(2),
-        "- withdrawals": totalWithdrawn.toFixed(2),
-        "= netDeposited": netDeposited.toFixed(2),
-      });
+      // Net deposited = gross mirror allocations - mirror withdrawals + direct investments + cash
+      const grossMirrorDeposits = mirrorInitialInvestments + mirrorSubsequentDeposits;
+      const totalDeposited = grossMirrorDeposits + directPositionAmounts + topCredit;
+      const netDeposited = totalDeposited - mirrorWithdrawals;
 
       // === COMPUTE PORTFOLIO VALUE FROM POSITIONS + LIVE RATES ===
       // Each position has: units, openRate, amount, openConversionRate, isBuy
