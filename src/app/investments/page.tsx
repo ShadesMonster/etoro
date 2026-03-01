@@ -100,14 +100,21 @@ export default function InvestmentsPage() {
   }, [etoroPositions, statusFilter, selectedYears]);
 
   // Dividend summary - prefer dedicated dividend data, fall back to transactions
+  // Respects year filter when specific years are selected
   const dividendStats = useMemo(() => {
+    const isYearFiltered = selectedYears.size > 0;
+
     if (etoroDividends.length > 0) {
-      const totalUSD = etoroDividends.reduce((s, d) => s + d.netDividendUSD, 0);
-      const totalGBP = etoroDividends.reduce((s, d) => s + d.netDividendGBP, 0);
-      const totalWithholdingUSD = etoroDividends.reduce((s, d) => s + d.withholdingTaxUSD, 0);
+      const filtered = isYearFiltered
+        ? etoroDividends.filter((d) => selectedYears.has(getFinancialYear(d.date)))
+        : etoroDividends;
+
+      const totalUSD = filtered.reduce((s, d) => s + d.netDividendUSD, 0);
+      const totalGBP = filtered.reduce((s, d) => s + d.netDividendGBP, 0);
+      const totalWithholdingUSD = filtered.reduce((s, d) => s + d.withholdingTaxUSD, 0);
 
       const monthlyDivs: Record<string, number> = {};
-      for (const d of etoroDividends) {
+      for (const d of filtered) {
         const m = d.date.slice(0, 7);
         monthlyDivs[m] = (monthlyDivs[m] || 0) + d.netDividendUSD;
       }
@@ -118,7 +125,7 @@ export default function InvestmentsPage() {
         totalDividends: totalUSD,
         totalDividendsGBP: totalGBP,
         totalWithholdingTax: totalWithholdingUSD,
-        count: etoroDividends.length,
+        count: filtered.length,
         avgMonthlyDiv,
         projectedAnnual: avgMonthlyDiv * 12,
         hasDedicatedData: true,
@@ -126,11 +133,14 @@ export default function InvestmentsPage() {
     }
 
     // Fallback: derive from transactions
-    const txDividends = etoroTransactions.filter(
+    let txDividends = etoroTransactions.filter(
       (tx) =>
         tx.type.toLowerCase().includes("dividend") ||
         tx.detail.toLowerCase().includes("dividend")
     );
+    if (isYearFiltered) {
+      txDividends = txDividends.filter((tx) => selectedYears.has(getFinancialYear(tx.date)));
+    }
     const totalDividends = txDividends.reduce((s, tx) => s + tx.amount, 0);
 
     const monthlyDivs: Record<string, number> = {};
@@ -150,7 +160,7 @@ export default function InvestmentsPage() {
       projectedAnnual: avgMonthlyDiv * 12,
       hasDedicatedData: false,
     };
-  }, [etoroDividends, etoroTransactions]);
+  }, [etoroDividends, etoroTransactions, selectedYears]);
 
   // Open positions from the positions CSV (if uploaded)
   const openPositionsFromCSV = useMemo(
@@ -242,6 +252,7 @@ export default function InvestmentsPage() {
   const portfolio = useMemo(() => {
     const hasApiData = etoroPortfolio?.connected === true;
     const hasTransactions = etoroTransactions.length > 0;
+    const isYearFiltered = selectedYears.size > 0;
 
     // Deposits & withdrawals from transaction history (CSV)
     const csvDeposits = etoroTransactions
@@ -258,21 +269,40 @@ export default function InvestmentsPage() {
       ? csvDeposits - csvWithdrawals
       : (etoroPortfolio?.totalInvested ?? 0);
 
-    // Realized P/L from all closed positions
+    // Realized P/L from all closed positions (lifetime)
     const realizedPL = etoroPositions
       .filter((p) => (p.status || "closed") === "closed")
       .reduce((sum, p) => sum + p.profit, 0);
 
-    // Unrealized P/L from open positions
+    // Unrealized P/L from open positions (lifetime)
     const openPositions = etoroPositions.filter((p) => (p.status || "closed") === "open");
     const unrealizedPL = openPositions.reduce((sum, p) => sum + p.profit, 0);
 
-    // Total dividends
-    const totalDividends = etoroDividends.length > 0
-      ? etoroDividends.reduce((s, d) => s + d.netDividendUSD, 0)
-      : etoroTransactions
-          .filter((tx) => tx.type.toLowerCase().includes("dividend") || tx.detail.toLowerCase().includes("dividend"))
+    // Year-filtered P/L from filteredPositions (respects both year and status filters)
+    const filteredPL = filteredPositions.reduce((sum, p) => sum + p.profit, 0);
+
+    // Year-filtered dividends
+    let filteredDividends: number;
+    if (isYearFiltered) {
+      if (etoroDividends.length > 0) {
+        filteredDividends = etoroDividends
+          .filter((d) => selectedYears.has(getFinancialYear(d.date)))
+          .reduce((s, d) => s + d.netDividendUSD, 0);
+      } else {
+        filteredDividends = etoroTransactions
+          .filter((tx) => {
+            const isDividend = tx.type.toLowerCase().includes("dividend") || tx.detail.toLowerCase().includes("dividend");
+            return isDividend && selectedYears.has(getFinancialYear(tx.date));
+          })
           .reduce((s, tx) => s + tx.amount, 0);
+      }
+    } else {
+      filteredDividends = etoroDividends.length > 0
+        ? etoroDividends.reduce((s, d) => s + d.netDividendUSD, 0)
+        : etoroTransactions
+            .filter((tx) => tx.type.toLowerCase().includes("dividend") || tx.detail.toLowerCase().includes("dividend"))
+            .reduce((s, tx) => s + tx.amount, 0);
+    }
 
     // Open positions value
     let openValue: number;
@@ -286,13 +316,16 @@ export default function InvestmentsPage() {
 
     // Portfolio value: prefer API equity, then compute from available data
     const apiEquity = etoroPortfolio?.netEquity;
-    const estimatedValue = apiEquity ?? (netInvested + realizedPL + totalDividends + unrealizedPL);
+    const estimatedValue = apiEquity ?? (netInvested + realizedPL + filteredDividends + unrealizedPL);
 
-    // P/L: prefer API P/L when we have API data but no CSV transactions
+    // P/L: when year-filtered, use P/L from filtered positions only
+    // When all-time, prefer API P/L if available
     let totalPL: number;
     let plPercent: number;
-    if (hasApiData && !hasTransactions && etoroPortfolio?.totalPL !== undefined) {
-      // Use API-computed P/L (more accurate when we don't have CSV deposit data)
+    if (isYearFiltered) {
+      totalPL = filteredPL;
+      plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
+    } else if (hasApiData && !hasTransactions && etoroPortfolio?.totalPL !== undefined) {
       totalPL = etoroPortfolio.totalPL;
       plPercent = etoroPortfolio.totalPLPercent ?? (netInvested > 0 ? (totalPL / netInvested) * 100 : 0);
     } else {
@@ -312,7 +345,7 @@ export default function InvestmentsPage() {
       withdrawals,
       realizedPL,
       unrealizedPL,
-      totalDividends,
+      totalDividends: filteredDividends,
       totalPL,
       plPercent,
       openValue,
@@ -321,8 +354,9 @@ export default function InvestmentsPage() {
       hasOpenFromCSV: openPositionsFromCSV.length > 0,
       hasTransactions,
       hasApiData,
+      isYearFiltered,
     };
-  }, [etoroPositions, etoroTransactions, etoroDividends, openPositionsFromCSV, openPositionsCostBasis, openPositionCount, etoroPortfolio]);
+  }, [etoroPositions, etoroTransactions, etoroDividends, openPositionsFromCSV, openPositionsCostBasis, openPositionCount, etoroPortfolio, selectedYears, filteredPositions]);
 
   const stats = useMemo(() => {
     // P/L and win/loss from the filtered set (respects all/open/closed filter)
@@ -571,7 +605,7 @@ export default function InvestmentsPage() {
         <StatCard
           label="Total P/L"
           value={formatCurrency(portfolio.totalPL, "USD")}
-          subtitle={formatPercent(portfolio.plPercent)}
+          subtitle={`${formatPercent(portfolio.plPercent)}${portfolio.isYearFiltered ? " (filtered)" : ""}`}
           trend={portfolio.totalPL >= 0 ? "up" : "down"}
         />
         <StatCard
@@ -682,39 +716,73 @@ export default function InvestmentsPage() {
       )}
 
       {/* Performance Benchmark */}
-      {portfolio.plPercent !== 0 && (
-        <div className="card">
-          <h2 className="text-lg font-semibold text-white mb-3">
-            Performance Benchmark
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="p-3 rounded-lg bg-[var(--background)]">
-              <p className="text-xs text-[var(--muted)] mb-1">Your Return</p>
-              <p className={`text-xl font-bold ${portfolio.plPercent >= 0 ? "positive" : "negative"}`}>
-                {formatPercent(portfolio.plPercent)}
-              </p>
+      {portfolio.plPercent !== 0 && (() => {
+        // When year-filtered, plPercent is already a single-year return
+        // When all-time, annualize it using CAGR for fair comparison to annual benchmarks
+        let annualReturn = portfolio.plPercent;
+        let returnLabel = "Your Return";
+        let yearsInvested = 1;
+
+        if (!portfolio.isYearFiltered) {
+          // Estimate years invested from earliest position
+          const dates = etoroPositions
+            .map((p) => p.openDate || p.closeDate)
+            .filter(Boolean)
+            .sort();
+          if (dates.length > 0) {
+            yearsInvested = Math.max(1, (Date.now() - new Date(dates[0]!).getTime()) / (365.25 * 24 * 3600 * 1000));
+          }
+          if (yearsInvested > 1.1) {
+            // CAGR: (1 + cumReturn)^(1/years) - 1
+            const cumFactor = 1 + portfolio.plPercent / 100;
+            annualReturn = cumFactor > 0
+              ? (Math.pow(cumFactor, 1 / yearsInvested) - 1) * 100
+              : portfolio.plPercent / yearsInvested;
+            returnLabel = `Your Return (${yearsInvested.toFixed(1)}yr avg)`;
+          }
+        }
+
+        return (
+          <div className="card">
+            <h2 className="text-lg font-semibold text-white mb-3">
+              Performance Benchmark
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="p-3 rounded-lg bg-[var(--background)]">
+                <p className="text-xs text-[var(--muted)] mb-1">{returnLabel}</p>
+                <p className={`text-xl font-bold ${annualReturn >= 0 ? "positive" : "negative"}`}>
+                  {formatPercent(annualReturn)}
+                </p>
+                {!portfolio.isYearFiltered && yearsInvested > 1.1 && (
+                  <p className="text-xs text-[var(--muted)]">
+                    {formatPercent(portfolio.plPercent)} cumulative
+                  </p>
+                )}
+              </div>
+              <div className="p-3 rounded-lg bg-[var(--background)]">
+                <p className="text-xs text-[var(--muted)] mb-1">S&P 500 (avg annual)</p>
+                <p className="text-xl font-bold text-white">+10.00%</p>
+                <p className={`text-xs ${annualReturn > 10 ? "positive" : "negative"}`}>
+                  {annualReturn > 10 ? "Outperforming" : "Underperforming"} by {Math.abs(annualReturn - 10).toFixed(2)}%
+                </p>
+              </div>
+              <div className="p-3 rounded-lg bg-[var(--background)]">
+                <p className="text-xs text-[var(--muted)] mb-1">FTSE 100 (avg annual)</p>
+                <p className="text-xl font-bold text-white">+7.50%</p>
+                <p className={`text-xs ${annualReturn > 7.5 ? "positive" : "negative"}`}>
+                  {annualReturn > 7.5 ? "Outperforming" : "Underperforming"} by {Math.abs(annualReturn - 7.5).toFixed(2)}%
+                </p>
+              </div>
             </div>
-            <div className="p-3 rounded-lg bg-[var(--background)]">
-              <p className="text-xs text-[var(--muted)] mb-1">S&P 500 (avg annual)</p>
-              <p className="text-xl font-bold text-white">+10.00%</p>
-              <p className={`text-xs ${portfolio.plPercent > 10 ? "positive" : "negative"}`}>
-                {portfolio.plPercent > 10 ? "Outperforming" : "Underperforming"} by {Math.abs(portfolio.plPercent - 10).toFixed(2)}%
-              </p>
-            </div>
-            <div className="p-3 rounded-lg bg-[var(--background)]">
-              <p className="text-xs text-[var(--muted)] mb-1">FTSE 100 (avg annual)</p>
-              <p className="text-xl font-bold text-white">+7.50%</p>
-              <p className={`text-xs ${portfolio.plPercent > 7.5 ? "positive" : "negative"}`}>
-                {portfolio.plPercent > 7.5 ? "Outperforming" : "Underperforming"} by {Math.abs(portfolio.plPercent - 7.5).toFixed(2)}%
-              </p>
-            </div>
+            <p className="text-xs text-[var(--muted)] mt-2">
+              Note: Benchmark figures are historical averages for reference only.
+              {!portfolio.isYearFiltered && yearsInvested > 1.1
+                ? " Your return is annualized (CAGR) from your eToro data."
+                : " Your return is calculated from your actual eToro data."}
+            </p>
           </div>
-          <p className="text-xs text-[var(--muted)] mt-2">
-            Note: Benchmark figures are historical averages for reference only.
-            Your return is calculated from your actual eToro data.
-          </p>
-        </div>
-      )}
+        );
+      })()}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
         {/* P/L bar chart */}
