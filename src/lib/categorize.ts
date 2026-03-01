@@ -47,10 +47,30 @@ const SUBCATEGORY_HINTS: Record<string, SpendingCategory> = {
   "credit payment": "income",
 };
 
+// Barclays suffix codes at end of description → category hints
+// e.g. "CHARLIE HARRISON TZ17... FT" → FT = Funds Transfer
+const BARCLAYS_SUFFIX_HINTS: Record<string, SpendingCategory> = {
+  "FT": "transfers",   // Funds Transfer
+  "BBP": "bills",      // Bill Payment
+  "DD": "bills",       // Direct Debit
+  "SO": "bills",       // Standing Order
+};
+
+function detectBarclaysSuffix(desc: string): SpendingCategory | null {
+  // Match " FT", " BBP", " DD", " SO" at end of description (with optional date prefix)
+  const match = desc.match(/\s+(FT|BBP|DD|SO)\s*$/i)
+    || desc.match(/\s+ON\s+\d{1,2}\s+[A-Z]{3}\s+(FT|BBP|DD|SO)\s*$/i);
+  if (match) {
+    return BARCLAYS_SUFFIX_HINTS[match[1].toUpperCase()] || null;
+  }
+  return null;
+}
+
 // Barclays descriptions often end with " ON DD MMM CPM/BCC/FT/DD/BBP" — strip that noise
 function cleanDescription(desc: string): string {
   return desc
     .replace(/\s+ON\s+\d{1,2}\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s*(CPM|BCC|FT|BBP|DD|SO|CR)?\s*$/i, "")
+    .replace(/\s+[A-Z0-9]{10,}\s+(FT|BBP|DD|SO|CPM|BCC|CR)\s*$/i, "")  // "ref-code FT"
     .replace(/\s+\d{5,}\s*$/g, "")  // trailing reference numbers
     .replace(/AMOUNT IN [A-Z]{3}\s*[\d.]+/i, "")  // "AMOUNT IN USD 2.50"
     .trim();
@@ -80,6 +100,10 @@ export function categorizeTransaction(
       return rule.category;
     }
   }
+
+  // Detect Barclays suffix codes (FT, DD, SO, BBP) from raw description
+  const suffixHint = detectBarclaysSuffix(description);
+  if (suffixHint) return suffixHint;
 
   // Use bank subcategory as a hint when description patterns don't match
   if (subcategory) {

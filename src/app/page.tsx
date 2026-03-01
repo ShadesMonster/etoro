@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   AreaChart,
   Area,
@@ -71,6 +71,27 @@ export default function Dashboard() {
     etoroPositions.length > 0 ||
     retirementFunds.length > 0;
 
+  // Available months from transactions + smart default
+  const availableMonths = useMemo(() => {
+    const months = new Set<string>();
+    for (const t of transactions) months.add(t.date.slice(0, 7));
+    return Array.from(months).sort().reverse();
+  }, [transactions]);
+
+  const defaultMonth = useMemo(() => {
+    const now = new Date();
+    const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    // If this month has spending data, use it; otherwise fall back to last month
+    const hasThisMonth = transactions.some(
+      (t) => t.date.startsWith(thisMonth) && t.amount < 0
+    );
+    if (hasThisMonth) return thisMonth;
+    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    return `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, "0")}`;
+  }, [transactions]);
+
+  const [selectedMonth, setSelectedMonth] = useState<string>("");
+
   const stats = useMemo(() => {
     const latestTx = transactions.find((t) => t.balance !== undefined);
     const bankBalanceGBP = latestTx?.balance ?? 0;
@@ -117,13 +138,12 @@ export default function Dashboard() {
 
     const netWorth = bankBalance + investmentValue + retirementValue;
 
-    const now = new Date();
-    const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const activeMonth = selectedMonth || defaultMonth;
     const monthlySpending = transactions
-      .filter((t) => t.date.startsWith(thisMonth) && isSpending(t, categoryOverrides || {}))
+      .filter((t) => t.date.startsWith(activeMonth) && isSpending(t, categoryOverrides || {}))
       .reduce((sum, t) => sum + Math.abs(t.amount), 0);
     const monthlyIncome = transactions
-      .filter((t) => t.date.startsWith(thisMonth) && t.amount > 0)
+      .filter((t) => t.date.startsWith(activeMonth) && t.amount > 0)
       .reduce((sum, t) => sum + t.amount, 0);
 
     const categoryTotals: Record<string, number> = {};
@@ -146,7 +166,7 @@ export default function Dashboard() {
       const spent = transactions
         .filter((t) => {
           const cat = getEffectiveCategory(t, categoryOverrides || {});
-          return t.date.startsWith(thisMonth) && t.amount < 0 && cat === b.category;
+          return t.date.startsWith(activeMonth) && t.amount < 0 && cat === b.category;
         })
         .reduce((s, t) => s + Math.abs(t.amount), 0);
       return {
@@ -160,7 +180,7 @@ export default function Dashboard() {
       retirementValue, netWorth, monthlySpending, monthlyIncome,
       categoryData, monthBudgets,
     };
-  }, [transactions, etoroPositions, retirementFunds, settings, cur, rates, categoryOverrides, budgets]);
+  }, [transactions, etoroPositions, retirementFunds, settings, cur, rates, categoryOverrides, budgets, selectedMonth, defaultMonth]);
 
   // Stacked net worth over time
   const netWorthOverTime = useMemo(() => {
@@ -378,9 +398,24 @@ export default function Dashboard() {
 
       {/* Savings rate + this month */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {show("this-month") && stats.monthlySpending > 0 && (
+        {show("this-month") && (
           <div className="card">
-            <h2 className="text-lg font-semibold text-white mb-2">This Month</h2>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-lg font-semibold text-white">
+                {new Date((selectedMonth || defaultMonth) + "-01").toLocaleDateString("en-GB", { month: "long", year: "numeric" })}
+              </h2>
+              <select
+                value={selectedMonth || defaultMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                className="text-xs bg-[var(--background)] border border-[var(--card-border)] rounded px-2 py-1 text-[var(--muted)]"
+              >
+                {availableMonths.map((m) => (
+                  <option key={m} value={m}>
+                    {new Date(m + "-01").toLocaleDateString("en-GB", { month: "short", year: "numeric" })}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <p className="text-sm text-[var(--muted)]">Spending</p>
