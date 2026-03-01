@@ -93,7 +93,9 @@ export default function Dashboard() {
   const [selectedMonth, setSelectedMonth] = useState<string>("");
 
   const stats = useMemo(() => {
-    const latestTx = transactions.find((t) => t.balance !== undefined);
+    const latestTx = [...transactions]
+      .filter((t) => t.balance !== undefined)
+      .sort((a, b) => b.date.localeCompare(a.date))[0];
     const bankBalanceGBP = latestTx?.balance ?? 0;
     const bankBalance = convertCurrency(bankBalanceGBP, "GBP", cur, rates);
 
