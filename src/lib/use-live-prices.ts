@@ -21,6 +21,7 @@ export interface EtoroPortfolio {
   totalPLPercent?: number;
   totalInvested?: number;
   depositSummary?: number;
+  timeWeightedReturn?: number;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   positions?: any[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -198,12 +199,41 @@ export function useLivePrices(): UseLivePricesResult {
       const totalPL = netEquity - topCredit - totalInvested;
       const totalPLPercent = totalInvested > 0 ? (totalPL / totalInvested) * 100 : undefined;
 
+      // Time-weighted return (Modified Dietz) using mirror start dates.
+      // Earlier investments get more weight because they've been growing longer.
+      // This is closer to eToro's return calculation than simple P/L / invested.
+      let timeWeightedReturn: number | undefined;
+      const now = Date.now();
+      // Find the earliest mirror start date to define the period
+      let earliestStart = now;
+      for (const m of mirrors) {
+        const start = m.startedCopyDate ? new Date(m.startedCopyDate).getTime() : now;
+        if (start < earliestStart) earliestStart = start;
+      }
+      const periodMs = now - earliestStart;
+      if (periodMs > 0 && totalPL !== 0) {
+        let weightedInvestment = 0;
+        for (const m of mirrors) {
+          const netMirrorDeposit = (m.initialInvestment ?? 0) + (m.depositSummary ?? 0) - (m.withdrawalSummary ?? 0);
+          const startMs = m.startedCopyDate ? new Date(m.startedCopyDate).getTime() : now;
+          // Weight = fraction of total period this investment has been active
+          const weight = Math.max(0, (now - startMs) / periodMs);
+          weightedInvestment += netMirrorDeposit * weight;
+        }
+        // Add direct positions (assume invested at midpoint as approximation)
+        weightedInvestment += directAmounts * 0.5;
+        if (weightedInvestment > 0) {
+          timeWeightedReturn = (totalPL / weightedInvestment) * 100;
+        }
+      }
+
       console.log("[eToro API] Portfolio:", {
         positions: `${matched}/${allPositions.length}`,
         cash: topCredit.toFixed(2),
         invested: totalInvested.toFixed(2),
         pl: totalPL.toFixed(2),
-        plPercent: totalPLPercent?.toFixed(1) + "%",
+        simpleReturn: totalPLPercent?.toFixed(1) + "%",
+        timeWeightedReturn: timeWeightedReturn?.toFixed(1) + "%",
         total: netEquity.toFixed(2),
       });
 
@@ -213,6 +243,7 @@ export function useLivePrices(): UseLivePricesResult {
         netEquity,
         totalPL,
         totalPLPercent,
+        timeWeightedReturn,
         totalInvested,
         depositSummary: totalInvested,
         positions: allPositions,

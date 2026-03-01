@@ -339,7 +339,8 @@ export default function InvestmentsPage() {
       plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
     } else if (apiTotalPL !== undefined && !hasTransactions) {
       totalPL = apiTotalPL;
-      plPercent = etoroPortfolio?.totalPLPercent ?? (netInvested > 0 ? (totalPL / netInvested) * 100 : 0);
+      // Use time-weighted return (closer to eToro's return) if available, otherwise simple return
+      plPercent = etoroPortfolio?.timeWeightedReturn ?? etoroPortfolio?.totalPLPercent ?? (netInvested > 0 ? (totalPL / netInvested) * 100 : 0);
     } else {
       totalPL = estimatedValue - netInvested;
       plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
