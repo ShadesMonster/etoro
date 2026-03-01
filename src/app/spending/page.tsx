@@ -50,8 +50,8 @@ export default function SpendingPage() {
   const addToast = useToastStore((s) => s.addToast);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [monthFrom, setMonthFrom] = useState("");
+  const [monthTo, setMonthTo] = useState("");
   const [page, setPage] = useState(1);
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [fyFilter, setFyFilter] = useState<string>("all");
@@ -75,6 +75,26 @@ export default function SpendingPage() {
     return Array.from(fys).sort().reverse();
   }, [transactions]);
 
+  // Available months from transactions (sorted newest first for dropdowns)
+  const availableMonths = useMemo(() => {
+    const months = new Set<string>();
+    for (const t of transactions) months.add(t.date.slice(0, 7));
+    return Array.from(months).sort().reverse();
+  }, [transactions]);
+
+  // Smart defaults: if current month has data use it, otherwise start from last month
+  const defaultMonths = useMemo(() => {
+    const now = new Date();
+    const thisMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const lastMonth = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}`;
+    const hasThisMonth = transactions.some((t) => t.date.startsWith(thisMonth) && t.amount < 0);
+    return { from: lastMonth, to: hasThisMonth ? thisMonth : lastMonth };
+  }, [transactions]);
+
+  const activeMonthFrom = monthFrom || defaultMonths.from;
+  const activeMonthTo = monthTo || defaultMonths.to;
+
   // Apply category overrides and source filter
   const txsWithCategory = useMemo(
     () => {
@@ -88,7 +108,7 @@ export default function SpendingPage() {
     [transactions, categoryOverrides, sourceFilter]
   );
 
-  // Filter by date range + fiscal year
+  // Filter by month range + fiscal year
   const dateFiltered = useMemo(() => {
     let result = txsWithCategory;
     // Apply fiscal year filter (UK FY: 6 April - 5 April)
@@ -99,10 +119,15 @@ export default function SpendingPage() {
       const fyEnd = `${startYear + 1}-04-05`;
       result = result.filter((t) => t.date >= fyStart && t.date <= fyEnd);
     }
-    if (dateFrom) result = result.filter((t) => t.date >= dateFrom);
-    if (dateTo) result = result.filter((t) => t.date <= dateTo);
+    // Month range filter — compare YYYY-MM prefix
+    const mFrom = activeMonthFrom;
+    const mTo = activeMonthTo;
+    result = result.filter((t) => {
+      const m = t.date.slice(0, 7);
+      return m >= mFrom && m <= mTo;
+    });
     return result;
-  }, [txsWithCategory, dateFrom, dateTo, fyFilter]);
+  }, [txsWithCategory, activeMonthFrom, activeMonthTo, fyFilter]);
 
   // Filter by search
   const searchFiltered = useMemo(() => {
@@ -324,27 +349,33 @@ export default function SpendingPage() {
             <label className="text-xs text-[var(--muted)] block mb-1">
               From
             </label>
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => {
-                setDateFrom(e.target.value);
-                setPage(1);
-              }}
-            />
+            <select
+              value={activeMonthFrom}
+              onChange={(e) => { setMonthFrom(e.target.value); setPage(1); }}
+              className="w-36"
+            >
+              {availableMonths.map((m) => (
+                <option key={m} value={m}>
+                  {new Date(m + "-01").toLocaleDateString("en-GB", { month: "short", year: "numeric" })}
+                </option>
+              ))}
+            </select>
           </div>
           <div>
             <label className="text-xs text-[var(--muted)] block mb-1">
               To
             </label>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={(e) => {
-                setDateTo(e.target.value);
-                setPage(1);
-              }}
-            />
+            <select
+              value={activeMonthTo}
+              onChange={(e) => { setMonthTo(e.target.value); setPage(1); }}
+              className="w-36"
+            >
+              {availableMonths.map((m) => (
+                <option key={m} value={m}>
+                  {new Date(m + "-01").toLocaleDateString("en-GB", { month: "short", year: "numeric" })}
+                </option>
+              ))}
+            </select>
           </div>
           {sources.length > 1 && (
             <div>
@@ -365,12 +396,12 @@ export default function SpendingPage() {
               </select>
             </div>
           )}
-          {(searchQuery || dateFrom || dateTo || sourceFilter !== "all" || fyFilter !== "all") && (
+          {(searchQuery || monthFrom || monthTo || sourceFilter !== "all" || fyFilter !== "all") && (
             <button
               onClick={() => {
                 setSearchQuery("");
-                setDateFrom("");
-                setDateTo("");
+                setMonthFrom("");
+                setMonthTo("");
                 setSourceFilter("all");
                 setFyFilter("all");
                 setPage(1);
