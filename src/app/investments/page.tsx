@@ -240,19 +240,32 @@ export default function InvestmentsPage() {
 
   // Derive portfolio metrics from all available data
   const portfolio = useMemo(() => {
-    // Deposits & withdrawals from transaction history
-    const deposits = etoroTransactions
+    const hasApiData = etoroPortfolio?.connected === true;
+    const hasTransactions = etoroTransactions.length > 0;
+
+    // Deposits & withdrawals from transaction history (CSV)
+    const csvDeposits = etoroTransactions
       .filter((tx) => tx.type.toLowerCase().includes("deposit"))
       .reduce((s, tx) => s + Math.abs(tx.amount), 0);
-    const withdrawals = etoroTransactions
+    const csvWithdrawals = etoroTransactions
       .filter((tx) => tx.type.toLowerCase().includes("withdraw"))
       .reduce((s, tx) => s + Math.abs(tx.amount), 0);
-    const netInvested = deposits - withdrawals;
+
+    // Use CSV transactions for net invested when available, otherwise fall back to API data
+    const deposits = hasTransactions ? csvDeposits : (etoroPortfolio?.depositSummary ?? 0);
+    const withdrawals = hasTransactions ? csvWithdrawals : 0;
+    const netInvested = hasTransactions
+      ? csvDeposits - csvWithdrawals
+      : (etoroPortfolio?.totalInvested ?? 0);
 
     // Realized P/L from all closed positions
     const realizedPL = etoroPositions
       .filter((p) => (p.status || "closed") === "closed")
       .reduce((sum, p) => sum + p.profit, 0);
+
+    // Unrealized P/L from open positions
+    const openPositions = etoroPositions.filter((p) => (p.status || "closed") === "open");
+    const unrealizedPL = openPositions.reduce((sum, p) => sum + p.profit, 0);
 
     // Total dividends
     const totalDividends = etoroDividends.length > 0
@@ -263,27 +276,29 @@ export default function InvestmentsPage() {
 
     // Open positions value
     let openValue: number;
-    let unrealizedPL: number;
-    if (hasOpenFromCSV) {
-      // Have full open position data with current prices
-      openValue = openPositionsFromCSV.reduce((sum, p) => sum + p.units * p.currentRate, 0);
-      unrealizedPL = openValue - openPositionsCostBasis;
+    if (openPositionsFromCSV.length > 0) {
+      openValue = openPositionsFromCSV.reduce((sum, p) => {
+        return sum + (p.currentRate > 0 ? p.units * p.currentRate : (p.amount || p.units * p.openRate));
+      }, 0);
     } else {
-      // Only know cost basis from transactions - can't know unrealized P/L
       openValue = openPositionsCostBasis;
-      unrealizedPL = 0;
     }
 
-    // Use eToro API data if available (exact portfolio value), otherwise estimate
-    const hasApiData = etoroPortfolio?.connected === true;
+    // Portfolio value: prefer API equity, then compute from available data
     const apiEquity = etoroPortfolio?.netEquity;
-
     const estimatedValue = apiEquity ?? (netInvested + realizedPL + totalDividends + unrealizedPL);
 
-    // P/L = portfolio value - net invested (always use CSV deposits for net invested,
-    // since mirror-level depositSummary only counts copy-trader allocations, not total deposits)
-    const totalPL = estimatedValue - netInvested;
-    const plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
+    // P/L: prefer API P/L when we have API data but no CSV transactions
+    let totalPL: number;
+    let plPercent: number;
+    if (hasApiData && !hasTransactions && etoroPortfolio?.totalPL !== undefined) {
+      // Use API-computed P/L (more accurate when we don't have CSV deposit data)
+      totalPL = etoroPortfolio.totalPL;
+      plPercent = etoroPortfolio.totalPLPercent ?? (netInvested > 0 ? (totalPL / netInvested) * 100 : 0);
+    } else {
+      totalPL = estimatedValue - netInvested;
+      plPercent = netInvested > 0 ? (totalPL / netInvested) * 100 : 0;
+    }
 
     // Estimated cash = portfolio value - open positions value
     const estimatedCash = hasApiData
@@ -303,11 +318,11 @@ export default function InvestmentsPage() {
       openValue,
       estimatedCash,
       hasOpenPositions: openPositionCount > 0,
-      hasOpenFromCSV,
-      hasTransactions: etoroTransactions.length > 0,
+      hasOpenFromCSV: openPositionsFromCSV.length > 0,
+      hasTransactions,
       hasApiData,
     };
-  }, [etoroPositions, etoroTransactions, etoroDividends, openPositionsFromCSV, hasOpenFromCSV, openPositionsCostBasis, openPositionCount, etoroPortfolio]);
+  }, [etoroPositions, etoroTransactions, etoroDividends, openPositionsFromCSV, openPositionsCostBasis, openPositionCount, etoroPortfolio]);
 
   const stats = useMemo(() => {
     // P/L and win/loss from the filtered set (respects all/open/closed filter)
@@ -549,7 +564,9 @@ export default function InvestmentsPage() {
           value={formatCurrency(portfolio.netInvested, "USD")}
           subtitle={portfolio.withdrawals > 0
             ? `${formatCurrency(portfolio.deposits, "USD")} in / ${formatCurrency(portfolio.withdrawals, "USD")} out`
-            : undefined}
+            : portfolio.hasApiData && !portfolio.hasTransactions
+              ? "From eToro API"
+              : undefined}
         />
         <StatCard
           label="Total P/L"
@@ -560,7 +577,7 @@ export default function InvestmentsPage() {
         <StatCard
           label="Win / Loss"
           value={`${stats.winners} / ${stats.losers}`}
-          subtitle={`${filteredPositions.length} closed trades`}
+          subtitle={`${filteredPositions.length} ${statusFilter === "closed" ? "closed" : statusFilter === "open" ? "open" : ""} positions`}
         />
         <StatCard
           label="Dividends"
