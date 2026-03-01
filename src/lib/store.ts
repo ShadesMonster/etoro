@@ -6,6 +6,7 @@ import {
   Transaction, EtoroPosition, EtoroTransaction, EtoroDividend, RetirementFund,
   Budget, CategoryRule, SavingsGoal, UserSettings, SpendingCategory,
   Debt, DashboardWidget, DEFAULT_WIDGETS, BankSyncSession,
+  LifePlanMilestone, LifePlanSettings,
 } from "./types";
 import { categorizeTransaction } from "./categorize";
 
@@ -149,6 +150,12 @@ interface FinanceStore {
   addBankSyncSession: (session: BankSyncSession) => void;
   updateBankSyncSession: (sessionId: string, updates: Partial<BankSyncSession>) => void;
   removeBankSyncSession: (sessionId: string) => void;
+  lifePlanMilestones: LifePlanMilestone[];
+  lifePlanSettings: LifePlanSettings;
+  addLifePlanMilestone: (milestone: LifePlanMilestone) => void;
+  removeLifePlanMilestone: (id: string) => void;
+  updateLifePlanMilestone: (id: string, updates: Partial<LifePlanMilestone>) => void;
+  updateLifePlanSettings: (settings: Partial<LifePlanSettings>) => void;
   settings: UserSettings;
   updateSettings: (settings: Partial<UserSettings>) => void;
   recategorizeTransactions: () => number;
@@ -164,6 +171,17 @@ const DEFAULT_SETTINGS: UserSettings = {
   exchangeRateGBPtoUSD: 1.27,
   exchangeRateUSDtoGBP: 0.79,
   theme: "dark",
+};
+
+const DEFAULT_LIFE_PLAN_SETTINGS: LifePlanSettings = {
+  currentAge: 24,
+  currentNetWorth: 31300,
+  monthlyIncome: 3000,
+  monthlySavings: 500,
+  expectedReturnRate: 7,
+  salaryGrowthRate: 3,
+  inflationRate: 2.5,
+  retirementAge: 60,
 };
 
 export const useFinanceStore = create<FinanceStore>()(
@@ -256,6 +274,20 @@ export const useFinanceStore = create<FinanceStore>()(
         set((s) => ({
           bankSyncSessions: s.bankSyncSessions.filter((bs) => bs.sessionId !== sessionId),
         })),
+      lifePlanMilestones: [],
+      lifePlanSettings: DEFAULT_LIFE_PLAN_SETTINGS,
+      addLifePlanMilestone: (milestone) =>
+        set((s) => ({ lifePlanMilestones: [...s.lifePlanMilestones, milestone] })),
+      removeLifePlanMilestone: (id) =>
+        set((s) => ({ lifePlanMilestones: s.lifePlanMilestones.filter((m) => m.id !== id) })),
+      updateLifePlanMilestone: (id, updates) =>
+        set((s) => ({
+          lifePlanMilestones: s.lifePlanMilestones.map((m) =>
+            m.id === id ? { ...m, ...updates } : m
+          ),
+        })),
+      updateLifePlanSettings: (partial) =>
+        set((s) => ({ lifePlanSettings: { ...s.lifePlanSettings, ...partial } })),
       settings: DEFAULT_SETTINGS,
       updateSettings: (partial) =>
         set((s) => ({ settings: { ...s.settings, ...partial } })),
@@ -290,7 +322,9 @@ export const useFinanceStore = create<FinanceStore>()(
           etoroDividends: [], retirementFunds: [], categoryOverrides: {},
           categoryRules: [], budgets: [], savingsGoals: [], debts: [],
           dashboardWidgets: DEFAULT_WIDGETS, dismissedAlerts: [],
-          tickerMappings: {}, bankSyncSessions: [], settings: DEFAULT_SETTINGS,
+          tickerMappings: {}, bankSyncSessions: [],
+          lifePlanMilestones: [], lifePlanSettings: DEFAULT_LIFE_PLAN_SETTINGS,
+          settings: DEFAULT_SETTINGS,
         }),
       exportData: () => {
         const s = get();
@@ -301,7 +335,9 @@ export const useFinanceStore = create<FinanceStore>()(
           categoryOverrides: s.categoryOverrides, categoryRules: s.categoryRules,
           budgets: s.budgets, savingsGoals: s.savingsGoals, debts: s.debts,
           dashboardWidgets: s.dashboardWidgets, tickerMappings: s.tickerMappings,
-          bankSyncSessions: s.bankSyncSessions, settings: s.settings,
+          bankSyncSessions: s.bankSyncSessions,
+          lifePlanMilestones: s.lifePlanMilestones, lifePlanSettings: s.lifePlanSettings,
+          settings: s.settings,
         });
       },
       importData: (json) => {
@@ -316,6 +352,8 @@ export const useFinanceStore = create<FinanceStore>()(
             budgets: d.budgets || [], savingsGoals: d.savingsGoals || [],
             debts: d.debts || [], dashboardWidgets: d.dashboardWidgets || DEFAULT_WIDGETS,
             tickerMappings: d.tickerMappings || {}, bankSyncSessions: d.bankSyncSessions || [],
+            lifePlanMilestones: d.lifePlanMilestones || [],
+            lifePlanSettings: { ...DEFAULT_LIFE_PLAN_SETTINGS, ...(d.lifePlanSettings || {}) },
             settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}) },
           });
           return true;

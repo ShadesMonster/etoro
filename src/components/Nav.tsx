@@ -12,6 +12,7 @@ const links = [
   { href: "/retirement", label: "Retirement" },
   { href: "/analytics", label: "Analytics" },
   { href: "/planning", label: "Planning" },
+  { href: "/lifeplan", label: "Life Plan" },
   { href: "/tax", label: "Tax" },
   { href: "/upload", label: "Upload" },
   { href: "/banksync", label: "Bank Sync" },

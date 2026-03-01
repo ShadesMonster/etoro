@@ -274,3 +274,46 @@ export interface BankSyncSession {
   lastSyncAt?: string;
   validUntil?: string;
 }
+
+// ─── Life Plan types ──────────────────────────────────────────────────────────
+
+export type LifeEventCategory = "housing" | "family" | "career" | "lifestyle" | "retirement" | "other";
+
+export interface LifePlanMilestone {
+  id: string;
+  name: string;
+  targetAge: number;
+  estimatedCost: number;
+  category: LifeEventCategory;
+  notes?: string;
+  achieved?: boolean;
+}
+
+export interface LifePlanSettings {
+  currentAge: number;
+  currentNetWorth: number;
+  monthlyIncome: number;
+  monthlySavings: number;
+  expectedReturnRate: number;
+  salaryGrowthRate: number;
+  inflationRate: number;
+  retirementAge: number;
+}
+
+export const LIFE_EVENT_ICONS: Record<LifeEventCategory, string> = {
+  housing: "\uD83C\uDFE0",
+  family: "\uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67",
+  career: "\uD83D\uDCBC",
+  lifestyle: "\u2708\uFE0F",
+  retirement: "\uD83C\uDF34",
+  other: "\uD83C\uDFAF",
+};
+
+export const LIFE_EVENT_LABELS: Record<LifeEventCategory, string> = {
+  housing: "Housing",
+  family: "Family",
+  career: "Career",
+  lifestyle: "Lifestyle",
+  retirement: "Retirement",
+  other: "Other",
+};
