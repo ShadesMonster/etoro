@@ -173,11 +173,12 @@ export function useLivePrices(): UseLivePricesResult {
 
       // Match eToro's exact breakdown:
       // Cash = topCredit (account-level cash only)
-      // Total Invested = position amounts + mirror available cash
-      // P/L = position equity - position amounts (= sum of UPL + fees)
+      // Total Invested = sum of position amounts only
+      // P/L = (position equity - position amounts) + mirror available cash
+      //   Mirror available cash = realized profits sitting as cash within copy-traders
       // Total Value = cash + invested + P/L
-      const totalInvested = totalPositionAmounts + mirrorAvailableCash;
-      const totalPL = totalPositionEquity - totalPositionAmounts;
+      const totalInvested = totalPositionAmounts;
+      const totalPL = (totalPositionEquity - totalPositionAmounts) + mirrorAvailableCash;
       const netEquity = topCredit + totalInvested + totalPL;
       const totalPLPercent = totalInvested > 0 ? (totalPL / totalInvested) * 100 : undefined;
 
