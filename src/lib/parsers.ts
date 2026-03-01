@@ -662,10 +662,124 @@ export function parseStandardLifeCSV(
   });
 
   const warnings: string[] = [];
+  const headers = data.length > 0 ? Object.keys(data[0]) : [];
+
+  // Detect whether this is transaction format (Contributor/Date/Net Amount/Gross Amount)
+  // or valuation format (Date/Fund Value/Contributions/Growth)
+  const isTransactionFormat = headers.some((h) => h === "contributor");
+
+  if (isTransactionFormat) {
+    return parseStandardLifeTransactions(data, headers, warnings);
+  }
+  return parseStandardLifeValuations(data, headers, warnings);
+}
+
+function parseStandardLifeTransactions(
+  data: Record<string, string>[],
+  headers: string[],
+  warnings: string[]
+): ParseResult<RetirementFund> {
+  const hasDate = headers.some((h) => h === "date");
+  const hasAmount = headers.some((h) =>
+    ["net amount", "gross amount", "amount"].includes(h)
+  );
+
+  if (!hasDate)
+    warnings.push(`Date column not found. Found: ${headers.join(", ")}`);
+  if (!hasAmount)
+    warnings.push(
+      `Amount column not found. Expected "Net Amount" or "Gross Amount". Found: ${headers.join(", ")}`
+    );
+
+  // Parse each transaction row
+  interface TxnRow {
+    date: string;
+    contributor: string;
+    amount: number;
+  }
+  const txns: TxnRow[] = [];
+  let skipped = 0;
+
+  for (const row of data) {
+    const date = row["date"] || "";
+    if (!date) {
+      skipped++;
+      continue;
+    }
+    const contributor = (row["contributor"] || "").toLowerCase();
+    const amount = parseNum(
+      row["gross amount"] || row["net amount"] || row["amount"]
+    );
+    txns.push({ date: parseFlexibleDate(date), contributor, amount });
+  }
+
+  if (skipped > 0) warnings.push(`${skipped} rows skipped (missing date)`);
+
+  // Sort transactions by date ascending for cumulative calculation
+  txns.sort((a, b) => a.date.localeCompare(b.date));
+
+  // Group by date, accumulate employer vs member contributions
+  const dateMap = new Map<
+    string,
+    { employer: number; member: number }
+  >();
+
+  for (const txn of txns) {
+    const entry = dateMap.get(txn.date) || { employer: 0, member: 0 };
+    const isEmployer =
+      txn.contributor.includes("employer");
+    if (isEmployer) {
+      entry.employer += txn.amount;
+    } else {
+      entry.member += txn.amount;
+    }
+    dateMap.set(txn.date, entry);
+  }
+
+  // Build cumulative RetirementFund records
+  const funds: RetirementFund[] = [];
+  let cumulativeMember = 0;
+  let cumulativeEmployer = 0;
+
+  const sortedDates = Array.from(dateMap.keys()).sort();
+  for (const date of sortedDates) {
+    const entry = dateMap.get(date)!;
+    cumulativeMember += entry.member;
+    cumulativeEmployer += entry.employer;
+    const totalValue = cumulativeMember + cumulativeEmployer;
+
+    funds.push({
+      date,
+      totalValue,
+      contributions: cumulativeMember,
+      employerContributions: cumulativeEmployer,
+      growthAmount: 0,
+      fundName: "Pension Fund",
+    });
+  }
+
+  if (funds.length > 0) {
+    warnings.push(
+      "Transaction format detected — values are cumulative contributions. Growth data is not available from this export."
+    );
+  }
+
+  return {
+    data: funds.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    ),
+    warnings,
+  };
+}
+
+function parseStandardLifeValuations(
+  data: Record<string, string>[],
+  headers: string[],
+  warnings: string[]
+): ParseResult<RetirementFund> {
   const funds: RetirementFund[] = [];
   let skipped = 0;
 
-  const headers = data.length > 0 ? Object.keys(data[0]) : [];
   const hasDate = headers.some((h) => ["date", "valuation date"].includes(h));
   const hasValue = headers.some((h) =>
     ["total value", "fund value", "value"].includes(h)
@@ -799,12 +913,13 @@ export function detectFileType(csvText: string): FileType {
     return "etoro-transactions";
   }
 
-  // Standard Life
+  // Standard Life (valuation or transaction format)
   if (
     headerLine.includes("fund name") ||
     headerLine.includes("fund value") ||
     headerLine.includes("employer contributions") ||
-    headerLine.includes("plan name")
+    headerLine.includes("plan name") ||
+    (headerLine.includes("contributor") && (headerLine.includes("net amount") || headerLine.includes("gross amount")))
   ) {
     return "standard-life";
   }
