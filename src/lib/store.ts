@@ -7,6 +7,7 @@ import {
   Budget, CategoryRule, SavingsGoal, UserSettings, SpendingCategory,
   Debt, DashboardWidget, DEFAULT_WIDGETS, BankSyncSession,
 } from "./types";
+import { categorizeTransaction } from "./categorize";
 
 // ─── IndexedDB Storage Adapter ──────────────────────────────────────────────
 const DB_NAME = "finance-tracker-db";
@@ -150,6 +151,7 @@ interface FinanceStore {
   removeBankSyncSession: (sessionId: string) => void;
   settings: UserSettings;
   updateSettings: (settings: Partial<UserSettings>) => void;
+  recategorizeTransactions: () => number;
   removeTransactions: (ids: string[]) => void;
   mergeTransactions: (keepId: string, removeIds: string[]) => void;
   clearAll: () => void;
@@ -257,6 +259,21 @@ export const useFinanceStore = create<FinanceStore>()(
       settings: DEFAULT_SETTINGS,
       updateSettings: (partial) =>
         set((s) => ({ settings: { ...s.settings, ...partial } })),
+      recategorizeTransactions: () => {
+        const s = get();
+        const rules = s.categoryRules?.length > 0 ? s.categoryRules : undefined;
+        let changed = 0;
+        const updated = s.transactions.map((t) => {
+          const newCat = categorizeTransaction(t.description, t.amount, rules);
+          if (newCat !== t.category) {
+            changed++;
+            return { ...t, category: newCat };
+          }
+          return t;
+        });
+        if (changed > 0) set({ transactions: updated });
+        return changed;
+      },
       removeTransactions: (ids) =>
         set((s) => {
           const idSet = new Set(ids);

@@ -15,6 +15,7 @@ import {
 } from "recharts";
 import Link from "next/link";
 import { useFinanceStore } from "@/lib/store";
+import { useToastStore } from "@/lib/toast";
 import {
   formatCurrency,
   formatDate,
@@ -44,19 +45,34 @@ const BANK_LABELS: Record<string, string> = {
 };
 
 export default function SpendingPage() {
-  const { transactions, categoryOverrides, setTransactionCategory, budgets } =
+  const { transactions, categoryOverrides, setTransactionCategory, budgets, recategorizeTransactions } =
     useFinanceStore();
+  const addToast = useToastStore((s) => s.addToast);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
   const [sourceFilter, setSourceFilter] = useState<string>("all");
+  const [fyFilter, setFyFilter] = useState<string>("all");
 
   // Get unique bank sources
   const sources = useMemo(() => {
     const s = new Set(transactions.map((t) => t.source));
     return Array.from(s);
+  }, [transactions]);
+
+  // Build fiscal year options from transaction data (UK FY: April - March)
+  const fiscalYears = useMemo(() => {
+    if (transactions.length === 0) return [];
+    const fys = new Set<string>();
+    for (const t of transactions) {
+      const d = new Date(t.date);
+      const year = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1; // Apr=3 is start
+      const short = (y: number) => String(y).slice(2);
+      fys.add(`${short(year)}/${short(year + 1)}`);
+    }
+    return Array.from(fys).sort().reverse();
   }, [transactions]);
 
   // Apply category overrides and source filter
@@ -72,13 +88,21 @@ export default function SpendingPage() {
     [transactions, categoryOverrides, sourceFilter]
   );
 
-  // Filter by date range
+  // Filter by date range + fiscal year
   const dateFiltered = useMemo(() => {
     let result = txsWithCategory;
+    // Apply fiscal year filter (UK FY: 6 April - 5 April)
+    if (fyFilter !== "all") {
+      const [startYY] = fyFilter.split("/");
+      const startYear = 2000 + parseInt(startYY);
+      const fyStart = `${startYear}-04-06`;
+      const fyEnd = `${startYear + 1}-04-05`;
+      result = result.filter((t) => t.date >= fyStart && t.date <= fyEnd);
+    }
     if (dateFrom) result = result.filter((t) => t.date >= dateFrom);
     if (dateTo) result = result.filter((t) => t.date <= dateTo);
     return result;
-  }, [txsWithCategory, dateFrom, dateTo]);
+  }, [txsWithCategory, dateFrom, dateTo, fyFilter]);
 
   // Filter by search
   const searchFiltered = useMemo(() => {
@@ -239,6 +263,45 @@ export default function SpendingPage() {
         </button>
       </div>
 
+      {/* Fiscal Year + Re-categorize */}
+      {fiscalYears.length > 0 && (
+        <div className="flex items-center gap-2 no-print flex-wrap">
+          <span className="text-xs text-[var(--muted)] mr-1">FY:</span>
+          <button
+            onClick={() => { setFyFilter("all"); setPage(1); }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              fyFilter === "all"
+                ? "bg-[var(--accent)] text-white"
+                : "bg-[var(--card)] text-[var(--muted)] hover:text-white"
+            }`}
+          >
+            All Time
+          </button>
+          {fiscalYears.map((fy) => (
+            <button
+              key={fy}
+              onClick={() => { setFyFilter(fy); setPage(1); }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                fyFilter === fy
+                  ? "bg-[var(--accent)] text-white"
+                  : "bg-[var(--card)] text-[var(--muted)] hover:text-white"
+              }`}
+            >
+              {fy}
+            </button>
+          ))}
+          <button
+            onClick={() => {
+              const n = recategorizeTransactions();
+              addToast(`Re-categorized ${n} transaction${n === 1 ? "" : "s"}`, "success");
+            }}
+            className="ml-auto btn-secondary text-xs"
+          >
+            Re-categorize All
+          </button>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="card no-print">
         <div className="flex flex-wrap gap-3 items-end">
@@ -302,13 +365,14 @@ export default function SpendingPage() {
               </select>
             </div>
           )}
-          {(searchQuery || dateFrom || dateTo || sourceFilter !== "all") && (
+          {(searchQuery || dateFrom || dateTo || sourceFilter !== "all" || fyFilter !== "all") && (
             <button
               onClick={() => {
                 setSearchQuery("");
                 setDateFrom("");
                 setDateTo("");
                 setSourceFilter("all");
+                setFyFilter("all");
                 setPage(1);
               }}
               className="btn-secondary text-sm"
