@@ -106,18 +106,33 @@ export function useLivePrices(): UseLivePricesResult {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mirrors: any[] = cp?.mirrors ?? [];
 
-      // Sum mirror-level available cash (uninvested cash within copy-traders).
-      // eToro counts this as part of "Total Invested" (allocated to the copy-trader).
+      // Aggregate mirror-level financial data.
+      // initialInvestment = first allocation to copy-trader (from deposits)
+      // depositSummary = subsequent additional deposits into the mirror
+      // withdrawalSummary = money moved back from mirror to account
+      // availableAmount = uninvested cash within the copy-trader (realized profits etc.)
+      let mirrorInitial = 0;
+      let mirrorDeposits = 0;
+      let mirrorWithdrawals = 0;
       let mirrorAvailableCash = 0;
       for (const m of mirrors) {
+        mirrorInitial += m.initialInvestment ?? 0;
+        mirrorDeposits += m.depositSummary ?? 0;
+        mirrorWithdrawals += m.withdrawalSummary ?? 0;
         mirrorAvailableCash += m.availableAmount ?? 0;
+      }
+
+      // Direct position amounts (outside copy-trading mirrors)
+      let directAmounts = 0;
+      for (const pos of directPositions) {
+        directAmounts += pos.amount ?? 0;
       }
 
       // === COMPUTE PORTFOLIO VALUE FROM POSITIONS + LIVE RATES ===
       // eToro's breakdown: Cash + Total Invested + P/L = Total Value
-      //   Cash = topCredit (account-level uninvested cash)
-      //   Total Invested = sum(pos.amount) + mirrorAvailableCash
-      //   P/L = sum(pos.equity - pos.amount) = sum(upl + totalFees)
+      //   Cash = topCredit (eToro separates this from invested)
+      //   Total Invested = deposit-based, NOT sum(pos.amount) which includes reinvested profits
+      //   P/L = Total Value - Cash - Total Invested (derived to keep equation balanced)
       const ratesRes = await fetch("/api/prices?action=rates").catch(() => null);
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -171,15 +186,16 @@ export function useLivePrices(): UseLivePricesResult {
         matched++;
       }
 
-      // Match eToro's exact breakdown:
-      // Cash = topCredit (account-level cash only)
-      // Total Invested = sum of position amounts only
-      // P/L = (position equity - position amounts) + mirror available cash
-      //   Mirror available cash = realized profits sitting as cash within copy-traders
-      // Total Value = cash + invested + P/L
-      const totalInvested = totalPositionAmounts;
-      const totalPL = (totalPositionEquity - totalPositionAmounts) + mirrorAvailableCash;
-      const netEquity = topCredit + totalInvested + totalPL;
+      // Total Value = topCredit + totalPositionEquity + mirrorAvailableCash
+      const netEquity = topCredit + totalPositionEquity + mirrorAvailableCash;
+
+      // Total Invested: deposit-based (not sum(pos.amount) which includes reinvested profits)
+      // Per mirror: initialInvestment + depositSummary - withdrawalSummary
+      // Plus direct positions. Cash (topCredit) excluded - eToro shows it separately.
+      const totalInvested = mirrorInitial + mirrorDeposits - mirrorWithdrawals + directAmounts;
+
+      // P/L = remainder to balance the equation: Total Value - Cash - Total Invested
+      const totalPL = netEquity - topCredit - totalInvested;
       const totalPLPercent = totalInvested > 0 ? (totalPL / totalInvested) * 100 : undefined;
 
       console.log("[eToro API] Portfolio:", {
