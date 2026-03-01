@@ -389,20 +389,23 @@ export default function AnalyticsPage() {
       .slice(0, 15);
   }, [etoroPositions, cur, rates]);
 
-  // ─── Projected net worth (linear extrapolation from last 6 months) ─────────
+  // ─── Trajectory & Milestone Projections ─────────────────────────────────────
 
-  const projectedNetWorth = useMemo(() => {
-    if (wealthComposition.length < 3) return [];
+  const trajectory = useMemo(() => {
+    if (wealthComposition.length < 3) return null;
 
     const historical = wealthComposition.map((d) => ({
       month: d.month,
       total: d.Bank + d.Investments + d.Retirement,
+      bank: d.Bank,
+      investments: d.Investments,
+      retirement: d.Retirement,
       isProjected: false,
     }));
 
-    // Use last 6 data points for trend
+    // Linear regression on last 6 data points
     const recent = historical.slice(-6);
-    if (recent.length < 2) return historical;
+    if (recent.length < 2) return null;
 
     const n = recent.length;
     const xMean = (n - 1) / 2;
@@ -413,27 +416,152 @@ export default function AnalyticsPage() {
       num += (i - xMean) * (recent[i].total - yMean);
       den += (i - xMean) ** 2;
     }
-    const slope = den > 0 ? num / den : 0;
-    const intercept = yMean - slope * xMean;
+    const monthlyGrowth = den > 0 ? num / den : 0;
+    const intercept = yMean - monthlyGrowth * xMean;
 
-    // Project 12 months forward
+    const currentNetWorth = historical[historical.length - 1].total;
+    const dailyGrowth = monthlyGrowth / 30.44;
+    const yearlyGrowth = monthlyGrowth * 12;
+    const growthPctMonthly = currentNetWorth > 0 ? (monthlyGrowth / currentNetWorth) * 100 : 0;
+
+    // Generate 5 years of projections
     const lastMonth = historical[historical.length - 1].month;
     const [lastY, lastM] = lastMonth.split("-").map(Number);
-    const projections = [];
+    const projections: typeof historical = [];
 
-    for (let i = 1; i <= 12; i++) {
+    for (let i = 1; i <= 60; i++) {
       const futureDate = new Date(lastY, lastM - 1 + i, 1);
       const m = `${futureDate.getFullYear()}-${String(futureDate.getMonth() + 1).padStart(2, "0")}`;
-      const projected = intercept + slope * (n - 1 + i);
+      const projected = intercept + monthlyGrowth * (n - 1 + i);
       projections.push({
         month: m,
         total: Math.round(Math.max(0, projected)),
+        bank: 0,
+        investments: 0,
+        retirement: 0,
         isProjected: true,
       });
     }
 
-    return [...historical, ...projections];
-  }, [wealthComposition]);
+    // Chart data: historical + 24 months projection (keep chart readable)
+    const chartData = [
+      ...historical,
+      ...projections.slice(0, 24),
+    ];
+
+    // Calculate milestone targets
+    const milestoneTargets = [
+      10000, 25000, 50000, 75000, 100000, 150000, 200000,
+      250000, 300000, 400000, 500000, 750000, 1000000,
+    ];
+
+    interface Milestone {
+      target: number;
+      monthsAway: number;
+      date: string;
+      label: string;
+      reached: boolean;
+    }
+
+    const milestones: Milestone[] = [];
+    const now = new Date();
+
+    for (const target of milestoneTargets) {
+      if (target <= currentNetWorth * 0.8) continue; // skip already-passed milestones (with margin)
+      if (milestones.length >= 6) break; // cap at 6 future milestones
+
+      if (target <= currentNetWorth) {
+        milestones.push({
+          target,
+          monthsAway: 0,
+          date: "Now",
+          label: fmt(target),
+          reached: true,
+        });
+      } else if (monthlyGrowth > 0) {
+        const monthsNeeded = (target - currentNetWorth) / monthlyGrowth;
+        const targetDate = new Date(now.getFullYear(), now.getMonth() + monthsNeeded, now.getDate());
+        milestones.push({
+          target,
+          monthsAway: Math.ceil(monthsNeeded),
+          date: targetDate.toLocaleDateString("en-GB", { month: "short", year: "numeric" }),
+          label: fmt(target),
+          reached: false,
+        });
+      }
+    }
+
+    // Time-based projections
+    const timeSnapshots = [
+      { label: "30 days", months: 1 },
+      { label: "3 months", months: 3 },
+      { label: "6 months", months: 6 },
+      { label: "1 year", months: 12 },
+      { label: "2 years", months: 24 },
+      { label: "5 years", months: 60 },
+    ].map(({ label, months }) => ({
+      label,
+      months,
+      projected: Math.round(currentNetWorth + monthlyGrowth * months),
+      gain: Math.round(monthlyGrowth * months),
+      gainPct: currentNetWorth > 0 ? ((monthlyGrowth * months) / currentNetWorth) * 100 : 0,
+    }));
+
+    // Average monthly income, spending, savings from recent data
+    const recent6 = monthlyFinancials.slice(-6);
+    const avgIncome = recent6.length > 0
+      ? recent6.reduce((s, m) => s + m.income, 0) / recent6.length
+      : 0;
+    const avgSpending = recent6.length > 0
+      ? recent6.reduce((s, m) => s + m.spending, 0) / recent6.length
+      : 0;
+    const avgDividends = recent6.length > 0
+      ? recent6.reduce((s, m) => s + m.dividends, 0) / recent6.length
+      : 0;
+    const avgInvestPL = recent6.length > 0
+      ? recent6.reduce((s, m) => s + m.investmentPL, 0) / recent6.length
+      : 0;
+    const avgPassiveIncome = avgDividends + Math.max(0, avgInvestPL);
+
+    // How long until passive income covers spending
+    const passiveCoversPct = avgSpending > 0 ? (avgPassiveIncome / avgSpending) * 100 : 0;
+    // Rough projection: if passive income grows proportionally to net worth
+    const passiveGrowthRate = currentNetWorth > 0 ? avgPassiveIncome / currentNetWorth : 0;
+    let monthsUntilPassiveCovers: number | null = null;
+    if (passiveGrowthRate > 0 && avgSpending > 0 && monthlyGrowth > 0) {
+      // Simple iterative: each month, net worth grows, passive income = net worth * rate
+      let simNW = currentNetWorth;
+      for (let m = 1; m <= 600; m++) {
+        simNW += monthlyGrowth;
+        const simPassive = simNW * passiveGrowthRate;
+        if (simPassive >= avgSpending) {
+          monthsUntilPassiveCovers = m;
+          break;
+        }
+      }
+    }
+
+    // Emergency fund coverage (months of spending covered by bank balance)
+    const latestBank = historical[historical.length - 1].bank;
+    const emergencyMonths = avgSpending > 0 ? latestBank / avgSpending : 0;
+
+    return {
+      currentNetWorth,
+      monthlyGrowth,
+      dailyGrowth,
+      yearlyGrowth,
+      growthPctMonthly,
+      chartData,
+      milestones,
+      timeSnapshots,
+      avgIncome,
+      avgSpending,
+      avgPassiveIncome,
+      passiveCoversPct,
+      monthsUntilPassiveCovers,
+      emergencyMonths,
+    };
+  }, [wealthComposition, monthlyFinancials, fmt]);
 
   // ─── Year-over-year comparison ─────────────────────────────────────────────
 
@@ -955,49 +1083,247 @@ export default function AnalyticsPage() {
         </div>
       )}
 
-      {/* ── Net Worth Projection ──────────────────────────────────────────── */}
-      {projectedNetWorth.length > 3 && (
-        <div className="card">
-          <h2 className="text-lg font-semibold mb-1">Net Worth Projection</h2>
-          <p className="text-xs text-[var(--muted)] mb-4">
-            Linear extrapolation based on last 6 months trend
-          </p>
-          <ResponsiveContainer width="100%" height={300}>
-            <AreaChart data={projectedNetWorth}>
-              <XAxis
-                dataKey="month"
-                stroke="var(--muted)"
-                fontSize={12}
-                tickFormatter={(v) => v.slice(2)}
-              />
-              <YAxis
-                stroke="var(--muted)"
-                fontSize={12}
-                tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`}
-              />
-              <Tooltip
-                {...tooltipStyle}
-                formatter={fmtTooltip}
-              />
-              <defs>
-                <linearGradient id="projGrad" x1="0" y1="0" x2="1" y2="0">
-                  <stop offset="0%" stopColor="#6366f1" />
-                  <stop offset="50%" stopColor="#6366f1" />
-                  <stop offset="100%" stopColor="#6366f1" stopOpacity={0.3} />
-                </linearGradient>
-              </defs>
-              <Area
-                type="monotone"
-                dataKey="total"
-                stroke="url(#projGrad)"
-                fill="#6366f1"
-                fillOpacity={0.15}
-                strokeWidth={2}
-                strokeDasharray="0"
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
+      {/* ── TRAJECTORY SECTION ─────────────────────────────────────────── */}
+      {trajectory && (
+        <>
+          <div className="border-t border-[var(--card-border)] pt-8">
+            <h2 className="text-2xl font-bold mb-1">Your Trajectory</h2>
+            <p className="text-[var(--muted)] text-sm mb-6">
+              At your current rate, here&apos;s where you&apos;re headed
+            </p>
+          </div>
+
+          {/* Growth rate cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="stat-card">
+              <p className="text-sm text-[var(--muted)] mb-1">Daily Growth</p>
+              <p className={`text-2xl font-bold ${trajectory.dailyGrowth >= 0 ? "positive" : "negative"}`}>
+                {trajectory.dailyGrowth >= 0 ? "+" : ""}{fmt(trajectory.dailyGrowth)}
+              </p>
+              <p className="text-xs text-[var(--muted)] mt-1">per day</p>
+            </div>
+            <div className="stat-card">
+              <p className="text-sm text-[var(--muted)] mb-1">Monthly Growth</p>
+              <p className={`text-2xl font-bold ${trajectory.monthlyGrowth >= 0 ? "positive" : "negative"}`}>
+                {trajectory.monthlyGrowth >= 0 ? "+" : ""}{fmt(trajectory.monthlyGrowth)}
+              </p>
+              <p className="text-xs text-[var(--muted)] mt-1">
+                {trajectory.growthPctMonthly >= 0 ? "+" : ""}{trajectory.growthPctMonthly.toFixed(2)}% / mo
+              </p>
+            </div>
+            <div className="stat-card">
+              <p className="text-sm text-[var(--muted)] mb-1">Yearly Growth</p>
+              <p className={`text-2xl font-bold ${trajectory.yearlyGrowth >= 0 ? "positive" : "negative"}`}>
+                {trajectory.yearlyGrowth >= 0 ? "+" : ""}{fmt(trajectory.yearlyGrowth)}
+              </p>
+              <p className="text-xs text-[var(--muted)] mt-1">projected annual</p>
+            </div>
+            <div className="stat-card">
+              <p className="text-sm text-[var(--muted)] mb-1">Emergency Fund</p>
+              <p className="text-2xl font-bold text-white">
+                {trajectory.emergencyMonths.toFixed(1)}
+              </p>
+              <p className="text-xs text-[var(--muted)] mt-1">months of expenses covered</p>
+            </div>
+          </div>
+
+          {/* At this rate, in X time you'll have... */}
+          <div className="card">
+            <h3 className="text-lg font-semibold mb-4">At This Rate, You&apos;ll Have...</h3>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              {trajectory.timeSnapshots.map((snap) => (
+                <div
+                  key={snap.label}
+                  className="text-center p-3 rounded-lg bg-[var(--card-border)]/20 border border-[var(--card-border)]/50"
+                >
+                  <p className="text-xs text-[var(--muted)] mb-1.5 uppercase tracking-wide">{snap.label}</p>
+                  <p className="text-lg font-bold text-white">{fmt(snap.projected)}</p>
+                  <p className={`text-xs mt-1 ${snap.gain >= 0 ? "positive" : "negative"}`}>
+                    {snap.gain >= 0 ? "+" : ""}{fmt(snap.gain)}
+                    <span className="text-[var(--muted)]"> ({snap.gainPct >= 0 ? "+" : ""}{snap.gainPct.toFixed(1)}%)</span>
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Projection chart (24 months) */}
+          <div className="card">
+            <h3 className="text-lg font-semibold mb-1">Net Worth Projection</h3>
+            <p className="text-xs text-[var(--muted)] mb-4">
+              Historical data + 24-month projection based on your recent trend
+            </p>
+            <ResponsiveContainer width="100%" height={350}>
+              <AreaChart data={trajectory.chartData}>
+                <XAxis
+                  dataKey="month"
+                  stroke="var(--muted)"
+                  fontSize={12}
+                  tickFormatter={(v) => v.slice(2)}
+                />
+                <YAxis
+                  stroke="var(--muted)"
+                  fontSize={12}
+                  tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`}
+                />
+                <Tooltip
+                  {...tooltipStyle}
+                  formatter={fmtTooltip}
+                  labelFormatter={(label) => {
+                    const item = trajectory.chartData.find((d) => d.month === label);
+                    return `${label}${item?.isProjected ? " (projected)" : ""}`;
+                  }}
+                />
+                <defs>
+                  <linearGradient id="trajGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <Area
+                  type="monotone"
+                  dataKey="total"
+                  stroke="#6366f1"
+                  fill="url(#trajGrad)"
+                  strokeWidth={2}
+                />
+                {/* Milestone reference lines */}
+                {trajectory.milestones
+                  .filter((m) => !m.reached && m.target <= (trajectory.chartData[trajectory.chartData.length - 1]?.total || 0))
+                  .map((m) => (
+                    <ReferenceLine
+                      key={m.target}
+                      y={m.target}
+                      stroke="var(--muted)"
+                      strokeDasharray="4 4"
+                      strokeOpacity={0.5}
+                      label={{
+                        value: m.label,
+                        position: "right",
+                        fill: "var(--muted)",
+                        fontSize: 11,
+                      }}
+                    />
+                  ))}
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Milestones timeline */}
+          {trajectory.milestones.length > 0 && (
+            <div className="card">
+              <h3 className="text-lg font-semibold mb-4">Milestones</h3>
+              <div className="relative">
+                {/* Timeline line */}
+                <div className="absolute left-4 top-3 bottom-3 w-0.5 bg-[var(--card-border)]" />
+                <div className="space-y-4">
+                  {trajectory.milestones.map((m, i) => {
+                    const formatTimeAway = (months: number) => {
+                      if (months <= 0) return "Reached";
+                      const y = Math.floor(months / 12);
+                      const mo = months % 12;
+                      const d = Math.round((months % 1) * 30.44);
+                      if (y > 0 && mo > 0) return `${y}y ${mo}mo`;
+                      if (y > 0) return `${y} year${y !== 1 ? "s" : ""}`;
+                      if (mo > 0 && d > 0) return `${mo}mo ${d}d`;
+                      if (mo > 0) return `${mo} month${mo !== 1 ? "s" : ""}`;
+                      return `${d} day${d !== 1 ? "s" : ""}`;
+                    };
+
+                    return (
+                      <div key={m.target} className="relative flex items-center gap-4 pl-9">
+                        <div
+                          className={`absolute left-2.5 w-3.5 h-3.5 rounded-full border-2 ${
+                            m.reached
+                              ? "bg-[var(--green)] border-[var(--green)]"
+                              : i === 0 || (i > 0 && trajectory.milestones[i - 1]?.reached)
+                              ? "bg-[var(--accent)] border-[var(--accent)] animate-pulse"
+                              : "bg-[var(--card)] border-[var(--muted)]"
+                          }`}
+                        />
+                        <div className="flex-1 flex items-center justify-between py-2 px-3 rounded-lg bg-[var(--card-border)]/15 hover:bg-[var(--card-border)]/25 transition-colors">
+                          <div>
+                            <span className="text-base font-semibold">{m.label}</span>
+                            {!m.reached && (
+                              <span className="text-xs text-[var(--muted)] ml-2">
+                                {m.date}
+                              </span>
+                            )}
+                          </div>
+                          <span
+                            className={`text-sm font-medium ${
+                              m.reached ? "positive" : "text-[var(--muted)]"
+                            }`}
+                          >
+                            {formatTimeAway(m.monthsAway)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Passive income progress */}
+          {trajectory.avgPassiveIncome > 0 && (
+            <div className="card">
+              <h3 className="text-lg font-semibold mb-4">Financial Independence Progress</h3>
+              <div className="mb-4">
+                <div className="flex justify-between text-sm mb-2">
+                  <span className="text-[var(--muted)]">Passive income covering expenses</span>
+                  <span className="font-medium">
+                    {trajectory.passiveCoversPct.toFixed(1)}%
+                  </span>
+                </div>
+                <div className="w-full h-4 rounded-full bg-[var(--card-border)] overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${Math.min(100, trajectory.passiveCoversPct)}%`,
+                      background: trajectory.passiveCoversPct >= 100
+                        ? "var(--green)"
+                        : trajectory.passiveCoversPct >= 50
+                        ? "linear-gradient(90deg, #6366f1, #22c55e)"
+                        : "var(--accent)",
+                    }}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                <div className="p-3 rounded-lg bg-[var(--card-border)]/20">
+                  <p className="text-[var(--muted)] mb-1">Avg Monthly Spending</p>
+                  <p className="text-lg font-semibold">{fmt(trajectory.avgSpending)}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-[var(--card-border)]/20">
+                  <p className="text-[var(--muted)] mb-1">Avg Monthly Passive Income</p>
+                  <p className="text-lg font-semibold positive">{fmt(trajectory.avgPassiveIncome)}</p>
+                  <p className="text-xs text-[var(--muted)]">dividends + investment gains</p>
+                </div>
+                <div className="p-3 rounded-lg bg-[var(--card-border)]/20">
+                  <p className="text-[var(--muted)] mb-1">Gap to Cover</p>
+                  {trajectory.passiveCoversPct >= 100 ? (
+                    <p className="text-lg font-semibold positive">Covered!</p>
+                  ) : (
+                    <>
+                      <p className="text-lg font-semibold negative">
+                        {fmt(trajectory.avgSpending - trajectory.avgPassiveIncome)}
+                      </p>
+                      {trajectory.monthsUntilPassiveCovers && (
+                        <p className="text-xs text-[var(--muted)]">
+                          ~{trajectory.monthsUntilPassiveCovers < 12
+                            ? `${trajectory.monthsUntilPassiveCovers} months`
+                            : `${Math.round(trajectory.monthsUntilPassiveCovers / 12)} years`} to full coverage
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
